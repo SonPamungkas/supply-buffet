@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace SupplyBuffetMod
 {
-    [BepInPlugin(PluginInfo.PLUGIN_GUID, PluginInfo.PLUGIN_NAME, PluginInfo.PLUGIN_VERSION)]
+    [BepInPlugin("com.neutral.supplybuffet", "SupplyBuffetMod", "1.8.0")]
     public class Plugin : BaseUnityPlugin
     {
         public static ManualLogSource Log;
@@ -64,7 +64,7 @@ namespace SupplyBuffetMod
 
             AutoRequestRearmEnabled = Config.Bind("AutoRequestRearm", "Enabled", true, "Let ships and ground vehicles automatically request rearm (join the resupply demand queue) after firing leaves a weapon station short of ammo, instead of requiring a manual player request.");
 
-            Harmony harmony = new Harmony(PluginInfo.PLUGIN_GUID);
+            Harmony harmony = new Harmony("com.neutral.supplybuffet");
             harmony.PatchAll();
 
             Log.LogInfo("SupplyBuffetMod initialized.");
@@ -147,44 +147,37 @@ namespace SupplyBuffetMod
         }
     }
 
-    [HarmonyPatch(typeof(Unit), "Start")]
-    public class Unit_Start_SupplyRadius_Patch
+    [HarmonyPatch(typeof(Rearmer), "Start")]
+    public class Rearmer_Start_SupplyRadius_Patch
     {
-        static void Postfix(Unit __instance)
+        static void Postfix(Rearmer __instance)
         {
             try
             {
-                if (__instance.unitName == null) return;
-                string name = __instance.unitName;
+                if (__instance.gameObject == null) return;
+                string name = __instance.gameObject.name;
 
                 if (name.Contains("MunitionsPallet1"))
                 {
-                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.MunitionsPalletRadius.Value);
+                    Traverse.Create(__instance).Field("range").SetValue(Plugin.MunitionsPalletRadius.Value);
                 }
                 else if (name.Contains("NavalPallet1"))
                 {
-                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.NavalPalletRadius.Value);
+                    Traverse.Create(__instance).Field("range").SetValue(Plugin.NavalPalletRadius.Value);
                 }
                 else if (name.Contains("MunitionsContainer1"))
                 {
-                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.MunitionsContainerRadius.Value);
+                    Traverse.Create(__instance).Field("range").SetValue(Plugin.MunitionsContainerRadius.Value);
                 }
                 else if (name.Contains("NavalSupplyContainer1"))
                 {
-                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.NavalContainerRadius.Value);
+                    Traverse.Create(__instance).Field("range").SetValue(Plugin.NavalContainerRadius.Value);
                 }
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogError($"[SupplyBuffetMod] Error in Unit_Start_SupplyRadius_Patch: {ex}");
+                Plugin.Log.LogError($"[SupplyBuffetMod] Error in Rearmer_Start_SupplyRadius_Patch: {ex}");
             }
         }
-    }
-
-    public static class PluginInfo
-    {
-        public const string PLUGIN_GUID = "com.user.supplybuffetmod";
-        public const string PLUGIN_NAME = "SupplyBuffetMod";
-        public const string PLUGIN_VERSION = "1.8.0";
     }
 }
