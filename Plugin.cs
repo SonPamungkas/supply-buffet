@@ -19,6 +19,11 @@ namespace SupplyBuffetMod
         public static ConfigEntry<bool> AdaptiveSupplyEnabled;
         public static ConfigEntry<float> AdaptiveSupplyCooldown;
 
+        public static ConfigEntry<float> MunitionsPalletRadius;
+        public static ConfigEntry<float> NavalPalletRadius;
+        public static ConfigEntry<float> MunitionsContainerRadius;
+        public static ConfigEntry<float> NavalContainerRadius;
+
         public static readonly Dictionary<string, string> AdaptiveSupplyPairs = new Dictionary<string, string>
         {
             { "MunitionsPallet1", "NavalPallet1" },
@@ -52,6 +57,11 @@ namespace SupplyBuffetMod
             AdaptiveSupplyEnabled = Config.Bind("AdaptiveSupply", "Enabled", true, "Let AI cargo helos swap their pallet/container between ground and naval variants when the type they're carrying has no demand but the other does.");
             AdaptiveSupplyCooldown = Config.Bind("AdaptiveSupply", "Cooldown", 30f, "Minimum time (in seconds) between loadout swaps on the same aircraft.");
 
+            MunitionsPalletRadius = Config.Bind("SupplyRadius", "MunitionsPallet1", 1500f, "Supply radius for Munitions Pallet");
+            NavalPalletRadius = Config.Bind("SupplyRadius", "NavalPallet1", 1500f, "Supply radius for Naval Pallet");
+            MunitionsContainerRadius = Config.Bind("SupplyRadius", "MunitionsContainer1", 1500f, "Supply radius for Munitions Container");
+            NavalContainerRadius = Config.Bind("SupplyRadius", "NavalSupplyContainer1", 1500f, "Supply radius for Naval Container");
+
             AutoRequestRearmEnabled = Config.Bind("AutoRequestRearm", "Enabled", true, "Let ships and ground vehicles automatically request rearm (join the resupply demand queue) after firing leaves a weapon station short of ammo, instead of requiring a manual player request.");
 
             Harmony harmony = new Harmony(PluginInfo.PLUGIN_GUID);
@@ -77,7 +87,7 @@ namespace SupplyBuffetMod
                 if (__instance.Ammo < __instance.FullAmmo && owner is IRearmable rearmable)
                 {
                     rearmable.RequestRearm();
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] Auto-requested rearm for '{owner.unitName}' (ammo {__instance.Ammo}/{__instance.FullAmmo}).");
+                    // Plugin.Log.LogInfo($"[SupplyBuffetMod] Auto-requested rearm for '{owner.unitName}' (ammo {__instance.Ammo}/{__instance.FullAmmo})."); // Removed to prevent log spam
                 }
             }
             catch (Exception ex)
@@ -133,6 +143,40 @@ namespace SupplyBuffetMod
             catch (Exception ex)
             {
                 Plugin.Log.LogError($"[SupplyBuffetMod] Error in Adaptive Supply Patch: {ex}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Unit), "Start")]
+    public class Unit_Start_SupplyRadius_Patch
+    {
+        static void Postfix(Unit __instance)
+        {
+            try
+            {
+                if (__instance.unitName == null) return;
+                string name = __instance.unitName;
+
+                if (name.Contains("MunitionsPallet1"))
+                {
+                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.MunitionsPalletRadius.Value);
+                }
+                else if (name.Contains("NavalPallet1"))
+                {
+                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.NavalPalletRadius.Value);
+                }
+                else if (name.Contains("MunitionsContainer1"))
+                {
+                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.MunitionsContainerRadius.Value);
+                }
+                else if (name.Contains("NavalSupplyContainer1"))
+                {
+                    Traverse.Create(__instance).Field("supplyRadius").SetValue(Plugin.NavalContainerRadius.Value);
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"[SupplyBuffetMod] Error in Unit_Start_SupplyRadius_Patch: {ex}");
             }
         }
     }
