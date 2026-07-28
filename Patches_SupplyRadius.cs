@@ -1,9 +1,10 @@
 using System;
 using HarmonyLib;
 using UnityEngine;
+
 namespace SupplyBuffetMod
 {
-    [HarmonyPatch(typeof(Rearmer), "Start")]
+    [HarmonyPatch(typeof(Rearmer), "Awake")]
     public class Rearmer_Start_SupplyRadius_Patch
     {
         static void Prefix(Rearmer __instance)
@@ -12,40 +13,37 @@ namespace SupplyBuffetMod
             {
                 if (__instance.gameObject == null) return;
                 string name = __instance.gameObject.name;
-                Traverse obj = Traverse.Create(__instance);
+                if (name == null) return;
+
                 float range;
-                if (name.Contains("MunitionsPallet1"))
+
+                if (name.IndexOf("MunitionsPallet1", StringComparison.Ordinal) >= 0)
                 {
                     range = Plugin.MunitionsPalletRadius.Value;
-                    obj.Field("range").SetValue(range);
-                    obj.Field("singleUse").SetValue(!Plugin.MunitionsPalletReplenishable.Value);
-                    obj.Field("checkInterval").SetValue(Plugin.MunitionsPalletCheckInterval.Value);
                 }
-                else if (name.Contains("NavalPallet1"))
+                else if (name.IndexOf("MunitionsPallet2", StringComparison.Ordinal) >= 0)
+                {
+                    range = Plugin.MunitionsPallet2Radius.Value;
+                }
+                else if (name.IndexOf("NavalPallet1", StringComparison.Ordinal) >= 0)
                 {
                     range = Plugin.NavalPalletRadius.Value;
-                    obj.Field("range").SetValue(range);
-                    obj.Field("singleUse").SetValue(!Plugin.NavalPalletReplenishable.Value);
-                    obj.Field("checkInterval").SetValue(Plugin.NavalPalletCheckInterval.Value);
                 }
-                else if (name.Contains("MunitionsContainer1"))
+                else if (name.IndexOf("MunitionsContainer1", StringComparison.Ordinal) >= 0)
                 {
                     range = Plugin.MunitionsContainerRadius.Value;
-                    obj.Field("range").SetValue(range);
-                    obj.Field("singleUse").SetValue(!Plugin.MunitionsContainerReplenishable.Value);
-                    obj.Field("checkInterval").SetValue(Plugin.MunitionsContainerCheckInterval.Value);
                 }
-                else if (name.Contains("NavalSupplyContainer1"))
+                else if (name.IndexOf("NavalSupplyContainer1", StringComparison.Ordinal) >= 0)
                 {
                     range = Plugin.NavalContainerRadius.Value;
-                    obj.Field("range").SetValue(range);
-                    obj.Field("singleUse").SetValue(!Plugin.NavalContainerReplenishable.Value);
-                    obj.Field("checkInterval").SetValue(Plugin.NavalContainerCheckInterval.Value);
                 }
                 else
                 {
                     return;
                 }
+
+                __instance.Range = range;
+
                 Plugin.Log.LogInfo($"[SupplyBuffetMod] Configured Rearmer '{name}': range={range}.");
             }
             catch (Exception ex)
