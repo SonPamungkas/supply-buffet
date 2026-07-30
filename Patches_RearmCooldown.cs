@@ -1,7 +1,6 @@
 using System;
 using HarmonyLib;
 using UnityEngine;
-
 namespace SupplyBuffetMod
 {
     [HarmonyPatch(typeof(Rearmer), "ProcessRearmRequest")]
@@ -24,7 +23,6 @@ namespace SupplyBuffetMod
             return true;
         }
     }
-
     [HarmonyPatch(typeof(Unit), "RpcRearm")]
     public class Unit_RpcRearm_Timer_Patch
     {
@@ -32,6 +30,26 @@ namespace SupplyBuffetMod
         {
             Plugin.UnitLastRearmTime.GetOrCreateValue(__instance).Value = Time.timeSinceLevelLoad;
             Plugin.Log.LogInfo($"[SupplyBuffetMod] Unit '{__instance.unitName}' rearmed at {Time.timeSinceLevelLoad:F1}s");
+        }
+    }
+    [HarmonyPatch(typeof(Unit), "InitializeUnit")]
+    public class Unit_InitializeUnit_ShipConfig_Patch
+    {
+        static void Postfix(Unit __instance)
+        {
+            try
+            {
+                if (__instance != null && __instance is Ship ship)
+                {
+                    string shipName = ship.unitName;
+                    if (string.IsNullOrEmpty(shipName)) shipName = ship.gameObject.name;
+                    if (!string.IsNullOrEmpty(shipName))
+                    {
+                        Plugin.GetShipRearmEverythingConfig(shipName);
+                    }
+                }
+            }
+            catch { }
         }
     }
 }

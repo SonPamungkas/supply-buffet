@@ -1,7 +1,6 @@
 using System;
 using HarmonyLib;
 using UnityEngine;
-
 namespace SupplyBuffetMod
 {
     [HarmonyPatch(typeof(Rearmer), "Awake")]
@@ -14,9 +13,7 @@ namespace SupplyBuffetMod
                 if (__instance.gameObject == null) return;
                 string name = __instance.gameObject.name;
                 if (name == null) return;
-
                 float range;
-
                 if (name.IndexOf("MunitionsPallet1", StringComparison.Ordinal) >= 0)
                 {
                     range = Plugin.MunitionsPalletRadius.Value;
@@ -41,9 +38,7 @@ namespace SupplyBuffetMod
                 {
                     return;
                 }
-
                 __instance.Range = range;
-
                 Plugin.Log.LogInfo($"[SupplyBuffetMod] Configured Rearmer '{name}': range={range}.");
             }
             catch (Exception ex)
