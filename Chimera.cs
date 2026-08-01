@@ -56,6 +56,29 @@ namespace SupplyBuffetMod
             _weaponMountCache.TryGetValue(key, out WeaponMount result);
             return result;
         }
+        public static float GetClosestHelipadDistance(FactionHQ hq, Unit requester, bool isWet)
+        {
+            float minDist = float.MaxValue;
+            var airbases = FactionRegistry.airbaseLookup.Values;
+            foreach (var ab in airbases)
+            {
+                if (ab != null && !ab.disabled && (ab.CurrentHQ == hq || (ab.CurrentHQ != null && ab.CurrentHQ.faction == hq.faction)))
+                {
+                    string n = ab.gameObject.name;
+                    bool isHelipad = n.IndexOf("Aryx_SupplyShip1", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("Helipad", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!isWet) 
+                    {
+                        isHelipad = isHelipad || n.IndexOf("AssaultCarrier1", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("FleetCarrier1", StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                    if (isHelipad)
+                    {
+                        float dist = UnityEngine.Vector3.Distance(ab.transform.position, requester.transform.position);
+                        if (dist < minDist) minDist = dist;
+                    }
+                }
+            }
+            return minDist;
+        }
         static bool Prefix(FactionHQ hq, Unit requester)
         {
             var chimera = GetChimeraDefinition();
@@ -146,9 +169,22 @@ namespace SupplyBuffetMod
             if (spawnBase != null)
             {
                 float dist = UnityEngine.Vector3.Distance(spawnBase.transform.position, requester.transform.position);
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] Evaluating Dry Chimera for {requester.unitName}: dist={dist:F1} (need > 14000), spawnBase={spawnBase.gameObject.name}");
-                if (dist > 14000f)
+                float chimeraThreshold = Plugin.DistanceBase.Value * Plugin.ThresholdMultiplierC.Value;
+                float distToHelipad = GetClosestHelipadDistance(hq, requester, false);
+                if (distToHelipad != float.MaxValue && dist > distToHelipad * 3f)
                 {
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod][Dry] Closest hangar ({dist:F1}) is >3x further than closest helipad ({distToHelipad:F1}). Skipping Chimera.");
+                    return true;
+                }
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] Evaluating Dry Chimera for {requester.unitName}: dist={dist:F1} (need > {chimeraThreshold:F1}), spawnBase={spawnBase.gameObject.name}");
+                if (dist > chimeraThreshold)
+                {
+                    if (Plugin.IsResupplyLimitReached(hq, "Aryx_CargoPlane1", true))
+                    {
+                        Plugin.Log.LogInfo($"[SupplyBuffetMod] Chimera is responsible for dry resupply of '{requester.unitName}', but Active Chimera limit is reached. Aborting spawn without fallback.");
+                        SupplyRunDry.IsSpawning = false;
+                        return false;
+                    }
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] Enqueueing Dry Chimera spawn for {requester.unitName}.");
                     Plugin.SpawnQueue.Enqueue(new Plugin.ChimeraSpawnRequest
                     {
@@ -165,7 +201,7 @@ namespace SupplyBuffetMod
                 }
                 else
                 {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod][Dry] Distance {dist:F1} is not > 14000, skipping Chimera.");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod][Dry] Distance {dist:F1} is not > {chimeraThreshold:F1}, skipping Chimera.");
                 }
             }
             else
@@ -250,9 +286,22 @@ namespace SupplyBuffetMod
             if (spawnBase != null)
             {
                 float dist = UnityEngine.Vector3.Distance(spawnBase.transform.position, requester.transform.position);
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] Evaluating Wet Chimera for {requester.unitName}: dist={dist:F1} (need > 14000), spawnBase={spawnBase.gameObject.name}");
-                if (dist > 14000f)
+                float chimeraThreshold = Plugin.DistanceBase.Value * Plugin.ThresholdMultiplierC.Value;
+                float distToHelipad = SupplyRunDry_SpawnAirResupply_Patch.GetClosestHelipadDistance(hq, requester, true);
+                if (distToHelipad != float.MaxValue && dist > distToHelipad * 3f)
                 {
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod][Wet] Closest hangar ({dist:F1}) is >3x further than closest helipad ({distToHelipad:F1}). Skipping Chimera.");
+                    return true;
+                }
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] Evaluating Wet Chimera for {requester.unitName}: dist={dist:F1} (need > {chimeraThreshold:F1}), spawnBase={spawnBase.gameObject.name}");
+                if (dist > chimeraThreshold)
+                {
+                    if (Plugin.IsResupplyLimitReached(hq, "Aryx_CargoPlane1", true))
+                    {
+                        Plugin.Log.LogInfo($"[SupplyBuffetMod] Chimera is responsible for naval resupply of '{requester.unitName}', but Active Chimera limit is reached. Aborting spawn without fallback.");
+                        SupplyRunWet.IsSpawning = false;
+                        return false;
+                    }
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] Enqueueing Wet Chimera spawn for {requester.unitName}.");
                     Plugin.SpawnQueue.Enqueue(new Plugin.ChimeraSpawnRequest
                     {
@@ -269,7 +318,7 @@ namespace SupplyBuffetMod
                 }
                 else
                 {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod][Wet] Distance {dist:F1} is not > 14000, skipping Chimera.");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod][Wet] Distance {dist:F1} is not > {chimeraThreshold:F1}, skipping Chimera.");
                 }
             }
             else

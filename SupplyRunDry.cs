@@ -125,17 +125,34 @@ namespace SupplyBuffetMod
                     if (spawnBase != null)
                     {
                         float dist = Vector3.Distance(spawnBase.transform.position, requester.transform.position);
-                        AircraftDefinition spawnDef = helo;
-                        StandardLoadout spawnLoadout = bestLoadoutHelo;
-                        if (dist > 10000f && vtol != null && bestLoadoutVtol != null && spawnBase.CanSpawnAircraft(vtol))
+                        AircraftDefinition spawnDef = null;
+                        StandardLoadout spawnLoadout = null;
+                        float heloThreshold = Plugin.DistanceBase.Value * Plugin.ThresholdMultiplierB.Value;
+                        if (dist > heloThreshold)
                         {
-                            spawnDef = vtol;
-                            spawnLoadout = bestLoadoutVtol;
+                            if (Plugin.IsResupplyLimitReached(hq, "QuadVTOL1"))
+                            {
+                                Plugin.Log.LogInfo($"[SupplyBuffetMod] Tarantula is responsible for dry resupply of '{requester.unitName}', but Active tarantula limit is reached. Aborting spawn without fallback.");
+                                return;
+                            }
+                            if (vtol != null && bestLoadoutVtol != null && spawnBase.CanSpawnAircraft(vtol))
+                            {
+                                spawnDef = vtol;
+                                spawnLoadout = bestLoadoutVtol;
+                            }
                         }
-                        else if ((helo == null || bestLoadoutHelo == null || !spawnBase.CanSpawnAircraft(helo)) && vtol != null && bestLoadoutVtol != null && spawnBase.CanSpawnAircraft(vtol))
+                        else
                         {
-                            spawnDef = vtol;
-                            spawnLoadout = bestLoadoutVtol;
+                            if (Plugin.IsResupplyLimitReached(hq, "UtilityHelo1"))
+                            {
+                                Plugin.Log.LogInfo($"[SupplyBuffetMod] Ibis is responsible for dry resupply of '{requester.unitName}', but Active Ibis limit is reached. Aborting spawn without fallback.");
+                                return;
+                            }
+                            if (helo != null && bestLoadoutHelo != null && spawnBase.CanSpawnAircraft(helo))
+                            {
+                                spawnDef = helo;
+                                spawnLoadout = bestLoadoutHelo;
+                            }
                         }
                         if (spawnDef != null && spawnLoadout != null)
                         {

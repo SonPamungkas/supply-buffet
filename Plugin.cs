@@ -10,13 +10,19 @@ using NuclearOption.Networking;
 using UnityEngine;
 namespace SupplyBuffetMod
 {
-    [BepInPlugin("neutral.supplybuffet", "SupplyBuffetMod", "2.1.1")] 
+    [BepInPlugin("neutral.supplybuffet", "SupplyBuffetMod", "2.1.2")] 
     public class Plugin : BaseUnityPlugin
     {
         public static ManualLogSource Log;
         public static ConfigEntry<bool> DebugLogging;
         public static ConfigEntry<bool> ExcludeLogisticsFromAILimit;
         public static ConfigEntry<bool> ExpressRearmEnabled;
+        public static ConfigEntry<float> DistanceBase;
+        public static ConfigEntry<float> ThresholdMultiplierB;
+        public static ConfigEntry<float> ThresholdMultiplierC;
+        public static ConfigEntry<int> ActiveIbisLimitConfig;
+        public static ConfigEntry<int> ActiveTarantulaLimitConfig;
+        public static ConfigEntry<int> ActiveChimeraLimitConfig;
         public static ConfigEntry<float> MunitionsPalletRadius;
         public static ConfigEntry<float> MunitionsPallet2Radius;
         public static ConfigEntry<float> NavalPalletRadius;
@@ -79,6 +85,50 @@ namespace SupplyBuffetMod
                 Log.LogInfo($"[SupplyBuffetMod] Registered Rearm Everything config toggle for ship: {safeName}");
             }
             return entry != null && entry.Value;
+        }
+        public static string GetShipName(Unit unit)
+        {
+            if (unit == null) return null;
+            if (!string.IsNullOrEmpty(unit.unitName)) return unit.unitName;
+            if (unit.definition != null && !string.IsNullOrEmpty(unit.definition.unitName)) return unit.definition.unitName;
+            if (unit.definition != null && !string.IsNullOrEmpty(unit.definition.name)) return unit.definition.name;
+            return unit.gameObject.name;
+        }
+        private static Dictionary<int, float> NullifierEndTimes = new Dictionary<int, float>();
+        private static Dictionary<int, Vector3> NullifierVelocityDirs = new Dictionary<int, Vector3>();
+        public static void TriggerControlNullifier(Aircraft aircraft, float duration = 5.0f)
+        {
+            if (aircraft == null) return;
+            float endTime = Time.timeSinceLevelLoad + duration;
+            int id = aircraft.GetInstanceID();
+            NullifierEndTimes[id] = endTime;
+            if (aircraft.rb != null && aircraft.rb.velocity.sqrMagnitude > 1f)
+            {
+                NullifierVelocityDirs[id] = aircraft.rb.velocity.normalized;
+            }
+            else
+            {
+                NullifierVelocityDirs[id] = aircraft.transform.forward;
+            }
+            Log.LogInfo($"[SupplyBuffetMod] Control nullifier triggered for '{aircraft.unitName}' until T={endTime:F1}s ({duration}s duration).");
+        }
+        public static bool IsControlNullified(Aircraft aircraft)
+        {
+            if (aircraft == null) return false;
+            if (NullifierEndTimes.TryGetValue(aircraft.GetInstanceID(), out float endTime))
+            {
+                return Time.timeSinceLevelLoad < endTime;
+            }
+            return false;
+        }
+        public static bool TryGetNullifiedVelocityDir(Aircraft aircraft, out Vector3 dir)
+        {
+            if (aircraft == null)
+            {
+                dir = Vector3.forward;
+                return false;
+            }
+            return NullifierVelocityDirs.TryGetValue(aircraft.GetInstanceID(), out dir);
         }
         public static bool IsLogisticAircraft(Aircraft aircraft)
         {
@@ -247,6 +297,11 @@ namespace SupplyBuffetMod
         }
         private bool TryProcessSpawnRequest(ChimeraSpawnRequest req)
         {
+            if (req == null || req.HQ == null || req.Requester == null) return true;
+            if (IsResupplyLimitReached(req.HQ, "Aryx_CargoPlane1", false))
+            {
+                return false;
+            }
             Airbase spawnBase = null;
             var airbases = FactionRegistry.airbaseLookup.Values;
             bool HasHangarMed(Airbase baseToCheck)
@@ -344,6 +399,60 @@ namespace SupplyBuffetMod
             _mountsByJsonKey.TryGetValue(key, out var mount);
             return mount;
         }
+        public static int GetActiveResupplyCount(FactionHQ hq, string jsonKey, bool includeQueue = false)
+        {
+            if (hq == null || string.IsNullOrEmpty(jsonKey)) return 0;
+            int count = 0;
+            var allAircraft = UnityEngine.Object.FindObjectsOfType<Aircraft>();
+            if (allAircraft != null)
+            {
+                foreach (var ac in allAircraft)
+                {
+                    if (ac != null && !ac.disabled && ac.gameObject.scene.rootCount > 0 && ac.Player == null)
+                    {
+                        if (ac.NetworkHQ == hq)
+                        {
+                            if (ac.definition != null && ac.definition.jsonKey == jsonKey)
+                            {
+                                count++;
+                            }
+                            else if (ac.unitName == jsonKey || ac.name.Contains(jsonKey))
+                            {
+                                count++;
+                            }
+                        }
+                    }
+                }
+            }
+            if (includeQueue && jsonKey == "Aryx_CargoPlane1")
+            {
+                foreach (var req in SpawnQueue)
+                {
+                    if (req != null && req.HQ == hq)
+                    {
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }
+        public static bool IsResupplyLimitReached(FactionHQ hq, string jsonKey, bool includeQueue = false)
+        {
+            int maxLimit = int.MaxValue;
+            if (jsonKey == "UtilityHelo1") maxLimit = ActiveIbisLimitConfig != null ? ActiveIbisLimitConfig.Value : int.MaxValue;
+            else if (jsonKey == "QuadVTOL1") maxLimit = ActiveTarantulaLimitConfig != null ? ActiveTarantulaLimitConfig.Value : int.MaxValue;
+            else if (jsonKey == "Aryx_CargoPlane1") maxLimit = ActiveChimeraLimitConfig != null ? ActiveChimeraLimitConfig.Value : int.MaxValue;
+            int activeCount = GetActiveResupplyCount(hq, jsonKey, includeQueue);
+            if (activeCount >= maxLimit)
+            {
+                if (DebugLogging != null && DebugLogging.Value)
+                {
+                    Log.LogInfo($"[SupplyBuffetMod] Active limit reached for '{jsonKey}' (Active/Queued: {activeCount} >= Limit: {maxLimit}).");
+                }
+                return true;
+            }
+            return false;
+        }
         private void Awake()
         {
             ConfigInstance = Config;
@@ -351,6 +460,15 @@ namespace SupplyBuffetMod
             DebugLogging = Config.Bind("General", "DebugLogging", false, "Enable debug logging for Supply Buffet.");
             ExcludeLogisticsFromAILimit = Config.Bind("General", "ExcludeLogisticsFromAILimit", true, "If true, logistic/resupply AI aircraft will not count towards the faction's AI Aircraft Limit, allowing combat sorties to spawn even when many resupply flights are active.");
             ExpressRearmEnabled = Config.Bind("ExpressRearm", "Enabled", true, "Let ships and ground vehicles immediately request rearm, and spawn supply helicopters when they do.");
+            DistanceBase = Config.Bind("Aircraft Distances", "Distance Base (m)", 10000f, 
+                "Base distance in meters to calculate thresholds for different transport aircraft.");
+            ThresholdMultiplierB = Config.Bind("Aircraft Distances", "Threshold Multiplier B (Helicopter)", 0.5f,
+                new ConfigDescription("Helicopter (Ibis/Cricket) will be used if distance < Distance Base * this multiplier.", new AcceptableValueRange<float>(0.0f, 1.0f)));
+            ThresholdMultiplierC = Config.Bind("Aircraft Distances", "Threshold Multiplier C (VTOL)", 1.5f,
+                new ConfigDescription("VTOL (Tarantula) will be used if distance < Distance Base * this multiplier (and >= Helicopter threshold). Above this, Chimera is used.", new AcceptableValueRange<float>(1.0f, 10.0f)));
+            ActiveIbisLimitConfig = Config.Bind("Aircraft Limits", "Active Ibis limit", 3, "Maximum active AI Ibis resupply flights allowed per faction.");
+            ActiveTarantulaLimitConfig = Config.Bind("Aircraft Limits", "Active Tarantula limit", 2, "Maximum active AI Tarantula resupply flights allowed per faction.");
+            ActiveChimeraLimitConfig = Config.Bind("Aircraft Limits", "Active Chimera limit", 1, "Maximum active AI Chimera resupply flights allowed per faction.");
             MunitionsPalletRadius = Config.Bind("SupplyRadius", "MunitionsPallet1", 100f, "Supply radius for Munitions Pallet");
             MunitionsPallet2Radius = Config.Bind("SupplyRadius", "MunitionsPallet2", 100f, "Supply radius for Small Munitions Pallet");
             NavalPalletRadius = Config.Bind("SupplyRadius", "NavalPallet1", 100f, "Supply radius for Naval Pallet");

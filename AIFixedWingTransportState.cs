@@ -161,7 +161,7 @@ namespace SupplyBuffetMod
             aircraft.SetFlightAssistToDefault();
             controlInputs = aircraft.GetInputs();
             Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} entered AIFixedWingTransportState.");
-            if (aircraft.NetworkHQ != null && aircraft.NetworkHQ.GetNearestGroundEnemy(aircraft.GlobalPosition(), out var nearestUnit))
+            if (aircraft.NetworkHQ != null && aircraft.NetworkHQ.TryGetNearestGroundEnemy(aircraft.GlobalPosition(), out var nearestUnit))
             {
                 Vector3 vector = nearestUnit.lastKnownPosition - aircraft.GlobalPosition();
                 vector.y = 0f;
@@ -281,7 +281,7 @@ namespace SupplyBuffetMod
             GlobalPosition? targetPosition = null;
             float range = float.MaxValue;
             float targetRadius = 0f;
-            if (aircraft.NetworkHQ != null && aircraft.NetworkHQ.GetNearestGroundEnemy(aircraft.GlobalPosition(), out var nearestUnit) && nearestUnit.TryGetUnit(out var unit))
+            if (aircraft.NetworkHQ != null && aircraft.NetworkHQ.TryGetNearestGroundEnemy(aircraft.GlobalPosition(), out var nearestUnit) && nearestUnit.TryGetUnit(out var unit))
             {
                 stateDisplayName = "Transporting Vehicles (contact)";
                 targetPosition = nearestUnit.lastKnownPosition;
@@ -444,6 +444,7 @@ namespace SupplyBuffetMod
             {
                 Plugin.Log.LogInfo($"[SupplyBuffetMod] Executing airdrop Fire() for {aircraft.unitName}!");
                 pilot.Fire();
+                Plugin.TriggerControlNullifier(aircraft, 5.0f);
                 pilot.flightInfo.LastCargoDelivery = Time.timeSinceLevelLoad;
                 deployedCargo = true;
                 if (assignedTargetUnit != null)
