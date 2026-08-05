@@ -5,7 +5,9 @@
 Ensuring that your ships, ground units, and front-line bases never run dry when the heat is on.
 
 ## Features
-- **Express Rearm (Naval & Ground):** Supply Buffet forces an immediate `0.999f` rearm request threshold.  When a naval or ground unit fires, units no longer wait to spent half of their magazine; they ask for supplies immediately. If target is further than 10 km, spawn Tarantula Instead.
-- **Native 0.34 Truck Integration:** Ground unit correctly spawn the new 0.34 Munitions Trucks from the nearest Vehicle Depot. Alongside Air Supply Run from nearest Helipad, Carriers, or Supply Ship
-- **Naval Helicopter Supply Drops:** Ships are strictly served by Ibis and Tarantula launching from Helipad or Atlas Supply Ship
-- **Flawless Loadout Forcing:** Hooked directly into the AI deployment and standard loadout selection to assigns exactly the right payload — Munitions Pallets and Containers for ground targets, and Naval Pallets/Containers for ships — completely bypassing vanilla RNG or hardcoded limits.
+- **Express Rearm (Naval & Ground):** When a ship or ground vehicle fires, Supply Buffet forces an immediate `0.999f` rearm request threshold. Units no longer wait to run dry; they ask for supplies immediately.
+- **Instant Dispatch:** A resupply mission is evaluated the moment a unit registers a rearm need, not on the next monitor tick, and the transport is spawned on the same frame if a hangar is free.
+- **Precision Airdrop:** The MC-260 Chimera flies a proper three-point delivery run (approach, drop, exit) with the cargo bay pre-opened during the run-in, so crates land on the target instead of sailing past it.
+- **Naval & Ground Supply Drops:** Ships are served by Utility Helicopters, VTOLs, and the Chimera launching from Airbases, Helipads, and Atlas supply ships; ground units and structures are served from any allied airbase.
+- **Flawless Loadout Forcing:** The mod builds the payload itself — Munitions Pallets and Containers for ground targets, Naval Pallets/Containers for ships — completely bypassing vanilla RNG or hardcoded limits.
+- **Distance-Tiered Aircraft Selection:** Ibis for short hauls, Tarantula for medium, Chimera for long range, with a fallback that refuses to send a cargo plane across the map when a helicopter is far closer.
