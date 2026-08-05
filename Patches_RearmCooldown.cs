@@ -1,6 +1,22 @@
+// ============================================================================
+// FILE: Patches_RearmCooldown.cs
+// PURPOSE: Enforces minimum cooldown intervals between successive rearm missions
+//          for any given unit to prevent rapid-fire supply spam.
+//
+// TRIGGERS:
+//   - Rearmer_ProcessRearmRequest_Cooldown_Patch: Prefix on Rearmer.ProcessRearmRequest.
+//   - Unit_RpcRearm_Timer_Patch: Postfix on Unit.RpcRearm.
+//
+// EFFECTS:
+//   - When a unit successfully rearms, its timestamp is recorded in UnitLastRearmTime.
+//   - If ProcessRearmRequest is called while the unit is within UnitCooldown seconds
+//     of its last rearm, the request is blocked.
+// ============================================================================
+
 using System;
 using HarmonyLib;
 using UnityEngine;
+
 namespace SupplyBuffetMod
 {
     [HarmonyPatch(typeof(Rearmer), "ProcessRearmRequest")]
@@ -17,12 +33,13 @@ namespace SupplyBuffetMod
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] Rearm blocked for '{unitToRearm.unitName}': on cooldown ({timeSince:F1}s < {Plugin.UnitCooldown.Value}s)");
                     shortfall = 0;
                     __result = false;
-                    return false; 
+                    return false; // Skip vanilla rearm processing while on cooldown
                 }
             }
             return true;
         }
     }
+
     [HarmonyPatch(typeof(Unit), "RpcRearm")]
     public class Unit_RpcRearm_Timer_Patch
     {
@@ -32,24 +49,5 @@ namespace SupplyBuffetMod
             Plugin.Log.LogInfo($"[SupplyBuffetMod] Unit '{__instance.unitName}' rearmed at {Time.timeSinceLevelLoad:F1}s");
         }
     }
-    [HarmonyPatch(typeof(Unit), "InitializeUnit")]
-    public class Unit_InitializeUnit_ShipConfig_Patch
-    {
-        static void Postfix(Unit __instance)
-        {
-            try
-            {
-                if (__instance != null && __instance is Ship ship)
-                {
-                    string shipName = ship.unitName;
-                    if (string.IsNullOrEmpty(shipName)) shipName = ship.gameObject.name;
-                    if (!string.IsNullOrEmpty(shipName))
-                    {
-                        Plugin.GetShipRearmEverythingConfig(shipName);
-                    }
-                }
-            }
-            catch { }
-        }
-    }
+
 }

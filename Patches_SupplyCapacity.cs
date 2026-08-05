@@ -1,6 +1,20 @@
+// ============================================================================
+// FILE: Patches_SupplyCapacity.cs
+// PURPOSE: Configures custom ammunition supply capacity and single-use behavior
+//          for supply containers and pallets.
+//
+// TRIGGERS:
+//   - Rearmer_Start_SupplyCapacity_Patch: Prefix on Rearmer.Awake.
+//
+// EFFECTS:
+//   - When a Rearmer component initializes on a supply container or pallet,
+//     its maxCapacity and singleUse fields are overridden with the configured values.
+// ============================================================================
+
 using System;
 using HarmonyLib;
 using UnityEngine;
+
 namespace SupplyBuffetMod
 {
     [HarmonyPatch(typeof(Rearmer), "Awake")]
@@ -8,6 +22,7 @@ namespace SupplyBuffetMod
     {
         private static readonly AccessTools.FieldRef<Rearmer, float> MaxCapacityRef = AccessTools.FieldRefAccess<Rearmer, float>("maxCapacity");
         private static readonly AccessTools.FieldRef<Rearmer, bool> SingleUseRef = AccessTools.FieldRefAccess<Rearmer, bool>("singleUse");
+
         static void Prefix(Rearmer __instance)
         {
             try
@@ -15,8 +30,10 @@ namespace SupplyBuffetMod
                 if (__instance.gameObject == null) return;
                 string name = __instance.gameObject.name;
                 if (name == null) return;
+
                 float capacity;
                 bool isSingleUse = true;
+
                 if (name.IndexOf("MunitionsPallet1", StringComparison.Ordinal) >= 0)
                 {
                     capacity = Plugin.MunitionsPalletCapacity.Value;
@@ -46,9 +63,11 @@ namespace SupplyBuffetMod
                 {
                     return;
                 }
+
                 __instance.Capacity = capacity;
                 MaxCapacityRef(__instance) = capacity;
                 SingleUseRef(__instance) = isSingleUse;
+
                 Plugin.Log.LogInfo($"[SupplyBuffetMod] Configured Rearmer '{name}': capacity={capacity}, singleUse={isSingleUse}.");
             }
             catch (Exception ex)
