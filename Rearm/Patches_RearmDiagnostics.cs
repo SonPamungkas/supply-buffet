@@ -11,7 +11,7 @@ namespace SupplyBuffetMod
         }
         static void Postfix(Rearmer __instance, Unit unitToRearm, float __state, bool __result)
         {
-            if (Plugin.DebugLogging == null || !Plugin.DebugLogging.Value) return;
+            if (!Plugin.Dbg) return;
             if (__instance == null || unitToRearm == null || unitToRearm.weaponStations == null) return;
             string rearmerName = (__instance.Unit != null) ? __instance.Unit.unitName : "?";
             Plugin.Log.LogInfo($"[SupplyBuffetMod][Rearm] '{rearmerName}' -> '{unitToRearm.unitName}': granted={__result}, capacity {__state:F0} -> {__instance.Capacity:F0} (spent {__state - __instance.Capacity:F0}).");

@@ -45,6 +45,11 @@ namespace SupplyBuffetMod
             }
             return items;
         }
+        public static bool IsPalletStick(string cargoUnitKey)
+        {
+            return !string.IsNullOrEmpty(cargoUnitKey)
+                   && cargoUnitKey.IndexOf("MunitionsPallet2", StringComparison.Ordinal) >= 0;
+        }
         public static float ItemCapacity(bool isWet, string cargoUnitKey)
         {
             if (!string.IsNullOrEmpty(cargoUnitKey))

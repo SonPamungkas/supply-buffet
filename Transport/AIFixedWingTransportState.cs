@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using UnityEngine;
 namespace SupplyBuffetMod
 {
-    public class AIFixedWingTransportState : PilotBaseState
+    public partial class AIFixedWingTransportState : PilotBaseState
     {
         public enum MissionKind
         {
@@ -35,6 +36,8 @@ namespace SupplyBuffetMod
             public GlobalPosition LZ;
             public TrackingInfo nearesttarget;
             public float slope;
+            public Vector3 arrivalHeading;
+            public Vector3 windOffset;
             public int touchdownPointAttempts;
             public TransportDestination(GlobalPosition landingPosition, GlobalPosition targetPos, float levelAmount)
             {
@@ -46,19 +49,21 @@ namespace SupplyBuffetMod
                 nearesttarget = null;
                 slope = levelAmount;
                 touchdownPointAttempts = 0;
+                arrivalHeading = Vector3.zero;   
+                windOffset = Vector3.zero;
             }
             public void UpdateLZ(Aircraft aircraft, GlobalPosition? targetPosition, float targetRadius, ref Vector3 approachDirection)
             {
                 if (!targetPosition.HasValue)
                 {
-                    Plugin.Log.LogInfo("[SupplyBuffetMod][AIFixedWingTransportState] UpdateLZ: Target position is null.");
+                    if (Plugin.Dbg) Plugin.Log.LogInfo("[SupplyBuffetMod][AIFixedWingTransportState] UpdateLZ: Target position is null.");
                     slope = 90f;
                     touchdownPointAttempts = 0;
                     return;
                 }
                 if (FastMath.InRange(aircraft.GlobalPosition(), touchdownPoint, 3000f))
                 {
-                    Plugin.Log.LogInfo("[SupplyBuffetMod][AIFixedWingTransportState] UpdateLZ: Within 3000m of touchdown point, committing to run.");
+                    if (Plugin.Dbg) Plugin.Log.LogInfo("[SupplyBuffetMod][AIFixedWingTransportState] UpdateLZ: Within 3000m of touchdown point, committing to run.");
                     return;
                 }
                 approachDirection = FastMath.NormalizedDirection(targetPosition.Value, aircraft.GlobalPosition());
@@ -68,7 +73,7 @@ namespace SupplyBuffetMod
                 globalPosition += approachDirection * num;
                 if (!FastMath.InRange(globalPosition, LZ, 100f))
                 {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod][AIFixedWingTransportState] UpdateLZ: Generating new LZ at distance {(globalPosition - targetPosition.Value).magnitude}m");
+                    if (Plugin.Dbg) Plugin.Log.LogInfo($"[SupplyBuffetMod][AIFixedWingTransportState] UpdateLZ: Generating new LZ at distance {(globalPosition - targetPosition.Value).magnitude}m");
                     LZ = globalPosition;
                     slope = 90f;
                     touchdownPointAttempts = 0;
@@ -91,15 +96,17 @@ namespace SupplyBuffetMod
                     float closing = Vector3.Dot(ownVel - targetVel, toUnit.normalized);
                     if (closing > 1f) leadTime = Mathf.Min(toUnit.magnitude / closing, 30f);
                 }
-                float leadDistance = unitSpeed * leadTime;
+                Vector3 leadOffset = forwardDir * (unitSpeed * leadTime);
+                Vector3 arrivalDir = forwardDir;
+                arrivalHeading = arrivalDir;
                 if (unitToRearm is Ship ship)
                 {
-                    touchdownPoint = ship.GlobalPosition() + forwardDir * leadDistance;
+                    touchdownPoint = ship.GlobalPosition() + leadOffset + windOffset;
                     slope = 0f;
                 }
                 else
                 {
-                    touchdownPoint = unitToRearm.GlobalPosition() + forwardDir * leadDistance;
+                    touchdownPoint = unitToRearm.GlobalPosition() + leadOffset + windOffset;
                     slope = 90f;
                 }
                 LZ = touchdownPoint;
@@ -130,13 +137,13 @@ namespace SupplyBuffetMod
                 aircraft.NetworkHQ.DeregisterDropZone(touchdownPoint);
                 if (!aircraft.NetworkHQ.IsDropZoneClear(hitInfo.point.ToGlobalPosition()))
                 {
-                    Plugin.Log.LogInfo("[SupplyBuffetMod][AIFixedWingTransportState] UpdateTouchdownPoint: Drop zone not clear.");
+                    if (Plugin.Dbg) Plugin.Log.LogInfo("[SupplyBuffetMod][AIFixedWingTransportState] UpdateTouchdownPoint: Drop zone not clear.");
                     return;
                 }
                 slope = num;
                 touchdownPoint = hitInfo.point.ToGlobalPosition();
                 aircraft.NetworkHQ.RegisterDropZone(touchdownPoint);
-                Plugin.Log.LogInfo($"[SupplyBuffetMod][AIFixedWingTransportState] Found touchdown point slope {num:F1} for {aircraft.unitName}");
+                if (Plugin.Dbg) Plugin.Log.LogInfo($"[SupplyBuffetMod][AIFixedWingTransportState] Found touchdown point slope {num:F1} for {aircraft.unitName}");
             }
         }
         private MissionKind missionKind;
@@ -165,8 +172,12 @@ namespace SupplyBuffetMod
         private Vector3 approachAxis;
         private float runFloorY;
         private float lastApproachRecalc;
+        private const float DESCENT_ABORT_MARGIN = 1.5f;
+        private const float DESCENT_HANDOFF_ALT = 1000f;
         private const float DRY_DROP_ALT = 700f;
-        private const float NAVAL_DROP_ALT = 200f;
+        private const float NAVAL_DROP_ALT = 150f;   
+        private const float AIRDROP_FAULT_GRACE = 1f;
+        private const float RUN_LINE_B_DISTANCE = 800f;
         private const float RUNWAY_DROP_ALT_MIN = 2f;
         private const float RUNWAY_DROP_ALT_MAX = 8f;
         private Airbase.Runway repairRunway;
@@ -175,7 +186,8 @@ namespace SupplyBuffetMod
         private bool gearDownForDrop;
         private const float ALIGN_TOLERANCE = 10f;
         private const float ALIGN_HOLD = 2f;
-        private const float STAGE_TIMEOUT = 45f;
+        private const float STAGE_TIMEOUT = 180f;
+        private const float MODE_CHECK_INTERVAL = 2f;
         private const float RUN_ABORT_TOLERANCE = 40f;
         private const float LZ_ABORT_SHIFT = 1000f;
         private const int RUN_ATTEMPT_WARN_INTERVAL = 5;
@@ -183,12 +195,34 @@ namespace SupplyBuffetMod
         private float alignedTime;
         private int runAttempts;
         private int dropAborts;
+        private int dropPassesReleased;
+        private float dropThrottleHold;
+        private static readonly ConditionalWeakTable<Aircraft, StrongBox<float>> LastLandingHandoff =
+            new ConditionalWeakTable<Aircraft, StrongBox<float>>();
+        private float LandingHandoffStamp
+        {
+            get
+            {
+                return (aircraft != null && LastLandingHandoff.TryGetValue(aircraft, out StrongBox<float> box))
+                    ? box.Value : 0f;
+            }
+            set
+            {
+                if (aircraft != null) LastLandingHandoff.GetOrCreateValue(aircraft).Value = value;
+            }
+        }
         private float lastDropAbortTime;
+        private float releaseFaultSince;
+        private readonly TransportDamageWatch damageWatch = new TransportDamageWatch();
+        private bool directDrop;
+        private bool jettisoning;
+        private float nextJettisonAt;
         private GlobalPosition runStartTouchdown;
-        private const float POST_DROP_BASE = 4f;
-        private const float POST_DROP_PER_ITEM = 9f;
+        private const float POST_DROP_BASE = 6f;
+        private const float POST_DROP_PER_ITEM = 6f;   
         private float postDropHold = POST_DROP_BASE;
         private float stageStartedAt;
+        private float lastModeCheck;
         private const int RUN_TERRAIN_SAMPLES = 11;
         private int itemsToRelease;
         private int itemsReleased;
@@ -200,10 +234,20 @@ namespace SupplyBuffetMod
         private TrackingInfo currentTargetTracking;
         private Vector3 approachDirection;
         public Unit assignedTargetUnit;
+        private string LogName
+        {
+            get
+            {
+                if (aircraft == null) return "Chimera";
+                string name = aircraft.unitName;
+                uint id = aircraft.persistentID.Id;
+                return (id != 0) ? name + "#" + id : name;
+            }
+        }
         public AIFixedWingTransportState(Aircraft aircraft)
         {
             base.aircraft = aircraft;
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] Instantiated AIFixedWingTransportState for {aircraft.unitName}");
+            Plugin.Log.LogInfo($"[SupplyBuffetMod] Instantiated AIFixedWingTransportState for {LogName}");
         }
         public override void EnterState(Pilot pilot)
         {
@@ -213,8 +257,14 @@ namespace SupplyBuffetMod
             base.pilot = pilot;
             aircraft = pilot.aircraft;
             aircraftParameters = aircraft.GetAircraftParameters();
+            Plugin.StampResupplyFlightStart(aircraft);
             defense = new ChimeraDefense(aircraft);
             deployedCargo = false;
+            dropPassesReleased = 0;
+            directDrop = false;
+            jettisoning = false;
+            nextJettisonAt = 0f;
+            damageWatch.Attach(aircraft);
             itemsToRelease = 0;
             itemsReleased = 0;
             lastBayOpenPing = 0f;
@@ -225,88 +275,13 @@ namespace SupplyBuffetMod
                 : null;
             aircraft.SetFlightAssistToDefault();
             controlInputs = aircraft.GetInputs();
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} entered AIFixedWingTransportState.");
+            Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} entered AIFixedWingTransportState.");
             if (aircraft.NetworkHQ != null && aircraft.NetworkHQ.TryGetNearestGroundEnemy(aircraft.GlobalPosition(), out var nearestUnit))
             {
                 Vector3 vector = nearestUnit.lastKnownPosition - aircraft.GlobalPosition();
                 vector.y = 0f;
                 transportDestination = new TransportDestination(nearestUnit.lastKnownPosition - vector.normalized * 50f, nearestUnit.lastKnownPosition - vector.normalized * 50f, 90f);
             }
-        }
-        private void ComputeApproachPoints(bool restartRun = true)
-        {
-            if (!transportDestination.validMission)
-            {
-                phase = FlightPhase.Waiting;
-                stateDisplayName = "Awaiting Cargo Mission";
-                return;
-            }
-            GlobalPosition target = transportDestination.touchdownPoint;
-            Vector3 axis;
-            if (missionKind == MissionKind.RunwayRepair && repairRunway != null)
-            {
-                axis = RepairRunwayAxis();
-            }
-            else if (assignedTargetUnit != null)
-            {
-                Vector3 vel = (assignedTargetUnit.rb != null) ? assignedTargetUnit.rb.velocity : Vector3.zero;
-                axis = (vel.sqrMagnitude > 1f) ? vel.normalized : assignedTargetUnit.transform.forward;
-            }
-            else
-            {
-                axis = approachDirection;
-            }
-            axis.y = 0f;
-            if (axis.sqrMagnitude < 0.01f)
-            {
-                axis = aircraft.transform.forward;
-            }
-            axis.Normalize();
-            approachAxis = axis;
-            bool hold = assignedTargetUnit == null || IsHoldingPosition(assignedTargetUnit);
-            pointA = target - axis * 5000f;
-            pointB = target - axis * (hold ? 800f : 600f);
-            pointC = target - axis * 150f;
-            runEntry = pointC - axis * (aircraftParameters.turningRadius * 3f);
-            if (missionKind == MissionKind.NavalSupply)
-            {
-                runFloorY = Datum.LocalSeaY;
-            }
-            else
-            {
-                runFloorY = (missionKind == MissionKind.RunwayRepair)
-                    ? SampleRunFloor(pointB, pointC)
-                    : SampleRunFloor(pointA, pointC);
-            }
-            if (itemsReleased > 0)
-            {
-                lastApproachRecalc = Time.timeSinceLevelLoad;
-                return;
-            }
-            lastApproachRecalc = Time.timeSinceLevelLoad;
-            if (!restartRun) return;
-            phase = (FastMath.Distance(aircraft.GlobalPosition(), pointA) <= DescentDistance())
-                ? FlightPhase.Approach
-                : (aircraft.radarAlt >= CruiseAltitude() * 0.9f ? FlightPhase.Cruise : FlightPhase.Climb);
-            EnterStage(phase);
-        }
-        private static float SampleRunFloor(GlobalPosition from, GlobalPosition to)
-        {
-            float highest = Datum.LocalSeaY;
-            Vector3 start = from.ToLocalPosition();
-            Vector3 end = to.ToLocalPosition();
-            int mask = PhysicsLayers.StaticsMask | PhysicsLayers.ExclusionZonesMask;
-            for (int i = 0; i < RUN_TERRAIN_SAMPLES; i++)
-            {
-                Vector3 p = Vector3.Lerp(start, end, i / (float)(RUN_TERRAIN_SAMPLES - 1));
-                p.y = Datum.LocalSeaY;
-                if (Physics.Linecast(p + Vector3.up * 5000f, p - Vector3.up * 5000f, out RaycastHit hit, mask)
-                    && hit.point.y > highest)
-                {
-                    highest = hit.point.y;
-                }
-            }
-            return highest;
         }
         private bool TrySelectRepairRunway(Airbase airbase)
         {
@@ -343,51 +318,156 @@ namespace SupplyBuffetMod
             axis.y = 0f;
             return (axis.sqrMagnitude > 0.01f) ? axis.normalized : aircraft.transform.forward;
         }
+        private float RunAimAltitude(float altitudeTarget)
+        {
+            return transportDestination.touchdownPoint.y + altitudeTarget;
+        }
         private float ClampAltitude(float altitude)
         {
             float floor = Mathf.Max(aircraft.maxRadius, aircraftParameters != null ? aircraftParameters.minimumRadarAlt : 0f);
             return Mathf.Clamp(altitude, floor, 8000f);
         }
+        private bool IsRunwayRepair => missionKind == MissionKind.RunwayRepair;
         private float DropAltitude()
         {
-            if (missionKind == MissionKind.RunwayRepair)
-            {
-                float configured = Plugin.ChimeraRunwayDropAltitude != null ? Plugin.ChimeraRunwayDropAltitude.Value : 5f;
-                return Mathf.Clamp(configured, RUNWAY_DROP_ALT_MIN, RUNWAY_DROP_ALT_MAX);
-            }
-            return ClampAltitude(missionKind == MissionKind.NavalSupply ? NAVAL_DROP_ALT : DRY_DROP_ALT);
+            if (IsRunwayRepair) return RunwayDropAltitude();
+            return NavalDropAltitude();
+        }
+        private float RunwayDropAltitude()
+        {
+            float configured = Plugin.Cfg(Plugin.ChimeraRunwayDropAltitude, 5f);
+            return Mathf.Clamp(configured, RUNWAY_DROP_ALT_MIN, RUNWAY_DROP_ALT_MAX);
         }
         private float CruiseAltitude()
         {
-            float configured = Plugin.ChimeraCruiseAltitude != null ? Plugin.ChimeraCruiseAltitude.Value : 2500f;
-            return ClampAltitude(Mathf.Max(DropAltitude() + 300f, configured));
+            return NavalCruiseAltitude();
         }
         private float DescentDistance()
         {
             if (missionKind == MissionKind.RunwayRepair)
             {
-                float runway = Plugin.ChimeraRunwayDescentDistance != null ? Plugin.ChimeraRunwayDescentDistance.Value : 6000f;
+                float runway = Plugin.Cfg(Plugin.ChimeraRunwayDescentDistance, 6000f);
                 return Mathf.Max(1000f, runway);
             }
-            float configured = Plugin.ChimeraDescentDistance != null ? Plugin.ChimeraDescentDistance.Value : 8000f;
+            float configured = Plugin.Cfg(Plugin.ChimeraDescentDistance, 5000f);
             return Mathf.Max(1000f, configured);
         }
         private void UpdateStateDisplayName()
         {
-            string label;
-            switch (phase)
+            stateDisplayName = PhaseLabel;
+        }
+        public string PhaseLabel
+        {
+            get
             {
-                case FlightPhase.Climb:     label = "Climbing";    break;
-                case FlightPhase.Cruise:    label = "En Route";    break;
-                case FlightPhase.Descent:   label = "Descending";  break;
-                case FlightPhase.Approach:  label = "Joining";     break;
-                case FlightPhase.Aligning:  label = "Aligning";    break;
-                case FlightPhase.Drop:      label = "Approaching"; break;
-                case FlightPhase.Exit:      label = "Dropping";    break;
-                case FlightPhase.Returning: label = "Returning";   break;
-                default:                    label = "";            break;
+                if (directDrop && phase == FlightPhase.Drop)
+                {
+                    if (!dryRunInArmed)
+                    {
+                        if (dryDescending) return "Transiting to Drop";
+                        float above = aircraft.GlobalPosition().y - transportDestination.touchdownPoint.y;
+                        return (above < CruiseAltitude() * 0.9f) ? "Climbing" : "En Route";
+                    }
+                    return "Running In";
+                }
+                switch (phase)
+                {
+                    case FlightPhase.Climb:     return "Climbing";
+                    case FlightPhase.Cruise:    return "En Route";
+                    case FlightPhase.Descent:   return "Descending";
+                    case FlightPhase.Approach:  return "Joining";
+                    case FlightPhase.Aligning:  return "Aligning";
+                    case FlightPhase.Drop:      return "Approaching";
+                    case FlightPhase.Exit:      return "Dropping";
+                    case FlightPhase.Returning: return "Returning";
+                    default:                    return "";
+                }
             }
-            stateDisplayName = string.IsNullOrEmpty(missionTargetLabel) ? label : $"{label}: {missionTargetLabel}";
+        }
+        public string MissionTargetLabel => missionTargetLabel;
+        public Unit AssignedTarget => assignedTargetUnit;
+        public bool HasMission => missionKind != MissionKind.None;
+        public string MissionKindLabel
+        {
+            get
+            {
+                switch (missionKind)
+                {
+                    case MissionKind.NavalSupply:   return "Naval Resupply";
+                    case MissionKind.LandSupply:    return "Ground Resupply";
+                    case MissionKind.CombatVehicle: return "Vehicle Delivery";
+                    case MissionKind.RunwayRepair:  return "Runway Repair";
+                    default:                        return "No Mission";
+                }
+            }
+        }
+        public int CargoAboard => CargoDemand.ItemsAboard(aircraft);
+        public float DistanceToTarget
+        {
+            get
+            {
+                if (assignedTargetUnit == null || aircraft == null) return -1f;
+                Vector3 flat = assignedTargetUnit.GlobalPosition() - aircraft.GlobalPosition();
+                flat.y = 0f;
+                return flat.magnitude;
+            }
+        }
+        private void PingCargoBayDoors(float distanceToTarget)
+        {
+            if (distanceToTarget >= 3000f) return;
+            if (Time.timeSinceLevelLoad - lastBayOpenPing <= 0.5f) return;
+            if (!TryGetCargoStation(out WeaponStation cargoStation)) return;
+            lastBayOpenPing = Time.timeSinceLevelLoad;
+            foreach (Weapon w in cargoStation.Weapons)
+            {
+                Hardpoint hp = (w != null) ? HardpointRef(w) : null;
+                if (hp != null) hp.SpringOpenBayDoors();
+            }
+        }
+        private float RollDegrees => Mathf.Abs(Mathf.DeltaAngle(aircraft.transform.eulerAngles.z, 0f));
+        private Vector3 FlatNose()
+        {
+            Vector3 nose = aircraft.transform.forward;
+            nose.y = 0f;
+            return nose;
+        }
+        private float ReleaseDropHeight()
+        {
+            if (IsRunwayRepair) return RunwayDropAltitude();
+            if (missionKind == MissionKind.LandSupply || missionKind == MissionKind.CombatVehicle)
+                return Plugin.Cfg(Plugin.DryPreferredRadarAltitude, 250f);
+            return NavalDropAltitude();
+        }
+        private void CommitMissionGeometry(bool hadValidMission, GlobalPosition previousTouchdown)
+        {
+            UpdateStateDisplayName();
+            Vector3 wind = MeanWind();
+            transportDestination.windOffset = CargoRelease.WindOffset(wind, ReleaseDropHeight());
+            if (Plugin.Dbg && transportDestination.windOffset.sqrMagnitude > 1f)
+            {
+                Plugin.Log.LogInfo($"[SB|W1] {LogName} wind {wind.magnitude:F1}m/s -> aim shifted {transportDestination.windOffset.magnitude:F0}m upwind from {ReleaseDropHeight():F0}m.");
+            }
+            if (!hadValidMission)
+            {
+                ComputeApproachPoints();
+            }
+            else if (!FastMath.InRange(transportDestination.touchdownPoint, previousTouchdown, 500f))
+            {
+                ComputeApproachPoints(restartRun: false);
+            }
+        }
+        private void EnterAwaitingMission(string reason)
+        {
+            phase = FlightPhase.Waiting;
+            missionKind = MissionKind.None;
+            transportDestination.validMission = false;
+            OrbitAirbase();
+            bool wasWaiting = stateDisplayName == "Awaiting Cargo Mission";
+            stateDisplayName = "Awaiting Cargo Mission";
+            if (!wasWaiting)
+            {
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} {reason}.");
+            }
         }
         private void SearchForDropZone()
         {
@@ -397,6 +477,22 @@ namespace SupplyBuffetMod
             }
             lastLandingSpotCheck = Time.timeSinceLevelLoad;
             if (aircraft.weaponStations == null) return;
+            if ((missionKind == MissionKind.LandSupply || missionKind == MissionKind.NavalSupply)
+                && phase != FlightPhase.Returning
+                && phase != FlightPhase.Exit
+                && CargoDemand.ItemsAboard(aircraft) == 0)
+            {
+                if (assignedTargetUnit != null)
+                {
+                    ResupplyMissionManager.UnassignTransport(assignedTargetUnit);
+                    assignedTargetUnit = null;
+                }
+                transportDestination.validMission = false;
+                phase = FlightPhase.Returning;
+                UpdateStateDisplayName();
+                Plugin.Log.LogInfo($"[SB|D9] {LogName} cargo hold is empty; returning to base.");
+                return;
+            }
             foreach (WeaponStation weaponStation in aircraft.weaponStations)
             {
                 if (weaponStation != null && weaponStation.WeaponInfo != null && weaponStation.WeaponInfo.cargo && weaponStation.Ammo > 0)
@@ -418,11 +514,12 @@ namespace SupplyBuffetMod
                     string why = (assignedTargetUnit == null) ? "target is gone"
                         : assignedTargetUnit.disabled ? $"{assignedTargetUnit.unitName} was destroyed"
                         : $"{assignedTargetUnit.unitName} no longer needs rearm";
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} releasing its lock mid-run ({why}); looking for another target.");
-                    if (assignedTargetUnit != null) ResupplyMissionManager.UnassignChimera(assignedTargetUnit);
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} releasing its lock mid-run ({why}); looking for another target.");
+                    if (assignedTargetUnit != null) ResupplyMissionManager.UnassignTransport(assignedTargetUnit);
                     assignedTargetUnit = null;
                     transportDestination.validMission = false;
                     runAttempts = 0;
+                    dropAborts = 0;   
                 }
                 else
                 {
@@ -430,18 +527,27 @@ namespace SupplyBuffetMod
                     return;
                 }
             }
-            bool rearmShip = aircraft.weaponManager.currentWeaponStation.WeaponInfo.rearmShip;
-            bool rearmGround = aircraft.weaponManager.currentWeaponStation.WeaponInfo.rearmGround;
+            bool rearmShip, rearmGround;
+            if (ResupplyCensus.TryGetIsWet(aircraft, out bool taggedWet))
+            {
+                rearmShip = taggedWet;
+                rearmGround = !taggedWet;
+            }
+            else
+            {
+                rearmShip = aircraft.weaponManager.currentWeaponStation.WeaponInfo.rearmShip;
+                rearmGround = aircraft.weaponManager.currentWeaponStation.WeaponInfo.rearmGround;
+            }
             GlobalPosition previousTouchdown = transportDestination.touchdownPoint;
             bool hadValidMission = transportDestination.validMission;
             Unit previousTarget = assignedTargetUnit;
             if (rearmShip || rearmGround)
             {
-                if (aircraft.NetworkHQ != null && ResupplyMissionManager.TryGetUnassignedUnitNeedingRearm(aircraft.NetworkHQ.RearmMissionController, rearmShip, rearmGround, aircraft, out var lowestAmmoUnit))
+                if (aircraft.NetworkHQ != null && ResupplyMissionManager.TryGetUnassignedUnitNeedingRearm(aircraft.NetworkHQ.RearmMissionController, rearmShip, rearmGround, aircraft, out var lowestAmmoUnit, LoadedDryCategory(), DryHomeBase(), DryMinDeliveryRange()))
                 {
                     assignedTargetUnit = lowestAmmoUnit;
-                    if (previousTarget != lowestAmmoUnit) runAttempts = 0;
-                    ResupplyMissionManager.AssignChimera(lowestAmmoUnit, aircraft);
+                    if (previousTarget != lowestAmmoUnit) { runAttempts = 0; dropAborts = 0; }
+                    ResupplyMissionManager.AssignTransport(lowestAmmoUnit, aircraft);
                     transportDestination.validMission = true;
                     timeWithoutMission = 0f;
                     if (!hadValidMission) transportDestination.UpdateLZ(aircraft, lowestAmmoUnit);
@@ -451,37 +557,20 @@ namespace SupplyBuffetMod
                     {
                         transportDestination.UpdateTouchdownPoint(100f, aircraft);
                     }
-                    UpdateStateDisplayName();
-                    if (!hadValidMission)
-                    {
-                        ComputeApproachPoints();
-                    }
-                    else if (!FastMath.InRange(transportDestination.touchdownPoint, previousTouchdown, 500f))
-                    {
-                        ComputeApproachPoints(restartRun: false);
-                    }
+                    CommitMissionGeometry(hadValidMission, previousTouchdown);
                     if (!hadValidMission || previousTarget != lowestAmmoUnit)
                     {
-                        Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} assigned to resupply {lowestAmmoUnit.unitName} ({stateDisplayName}). LZ: {transportDestination.touchdownPoint}");
+                        Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} assigned to resupply {lowestAmmoUnit.unitName} ({stateDisplayName}). LZ: {transportDestination.touchdownPoint}");
                     }
                 }
                 else
                 {
                     if (assignedTargetUnit != null)
                     {
-                        ResupplyMissionManager.UnassignChimera(assignedTargetUnit);
+                        ResupplyMissionManager.UnassignTransport(assignedTargetUnit);
                         assignedTargetUnit = null;
                     }
-                    phase = FlightPhase.Waiting;
-                    missionKind = MissionKind.None;
-                    transportDestination.validMission = false;
-                    OrbitAirbase();
-                    bool wasWaiting = stateDisplayName == "Awaiting Cargo Mission";
-                    stateDisplayName = "Awaiting Cargo Mission";
-                    if (!wasWaiting)
-                    {
-                        Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} awaiting cargo mission.");
-                    }
+                    EnterAwaitingMission("awaiting cargo mission");
                 }
                 return;
             }
@@ -534,32 +623,15 @@ namespace SupplyBuffetMod
                 if (!hadValidMission) missionKind = runwayMission ? MissionKind.RunwayRepair : MissionKind.CombatVehicle;
                 timeWithoutMission = 0f;
                 missionTargetLabel = vehicleLabel;
-                UpdateStateDisplayName();
+                CommitMissionGeometry(hadValidMission, previousTouchdown);
                 if (!hadValidMission)
                 {
-                    ComputeApproachPoints();
-                }
-                else if (!FastMath.InRange(transportDestination.touchdownPoint, previousTouchdown, 500f))
-                {
-                    ComputeApproachPoints(restartRun: false);
-                }
-                if (!hadValidMission)
-                {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} assigned to drop vehicle at {targetPosition.Value} ({stateDisplayName}).");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} assigned to drop vehicle at {targetPosition.Value} ({stateDisplayName}).");
                 }
             }
             else
             {
-                phase = FlightPhase.Waiting;
-                missionKind = MissionKind.None;
-                transportDestination.validMission = false;
-                OrbitAirbase();
-                bool wasWaiting = stateDisplayName == "Awaiting Cargo Mission";
-                stateDisplayName = "Awaiting Cargo Mission";
-                if (!wasWaiting)
-                {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} no valid drop zone found, awaiting mission.");
-                }
+                EnterAwaitingMission("no valid drop zone found, awaiting mission");
             }
         }
         public void OrbitAirbase()
@@ -572,7 +644,7 @@ namespace SupplyBuffetMod
             timeWithoutMission += 3f;
             if (timeWithoutMission > 45f)
             {
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} without mission for >45s. Returning to land.");
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} without mission for >45s. Returning to land.");
                 if (pilot.AILandingState != null)
                 {
                     pilot.SwitchState(pilot.AILandingState);
@@ -599,14 +671,7 @@ namespace SupplyBuffetMod
         private void UpdateDropGear()
         {
             if (missionKind != MissionKind.RunwayRepair) return;
-            bool wantGear = gearDownForDrop;
-            LandingGear.GearState gearState = aircraft.gearState;
-            if (gearState == LandingGear.GearState.Extending || gearState == LandingGear.GearState.Retracting) return;
-            LandingGear.GearState settled = wantGear
-                ? LandingGear.GearState.LockedExtended
-                : LandingGear.GearState.LockedRetracted;
-            if (gearState == settled) return;
-            aircraft.SetGear(wantGear);
+            TransportGear.Apply(aircraft, gearDownForDrop);
         }
         public override void FixedUpdateState(Pilot pilot)
         {
@@ -628,6 +693,7 @@ namespace SupplyBuffetMod
             if (aircraft == null || aircraft.rb == null) return;
             defense.Update();
             UpdateDropGear();
+            CheckBattleDamage();
             if (phase == FlightPhase.Returning)
             {
                 RunReturnPhase();
@@ -646,7 +712,20 @@ namespace SupplyBuffetMod
             if (transportDestination.validMission)
             {
                 bool transiting = phase == FlightPhase.Climb || phase == FlightPhase.Cruise;
-                float altitudeTarget = transiting ? CruiseAltitude() : DropAltitude();
+                directDrop = UseDirectDrop();
+                if (directDrop && phase != FlightPhase.Exit)
+                {
+                    RunDryMission();
+                    EjectionCheck();
+                    TargetSearch();
+                    DefendWithMissiles();
+                    return;
+                }
+                float descentHold = Plugin.Cfg(Plugin.DescentHandoffAltitude, DESCENT_HANDOFF_ALT);
+                float altitudeTarget;
+                if (transiting) altitudeTarget = CruiseAltitude();
+                else if (phase == FlightPhase.Descent) altitudeTarget = descentHold;
+                else altitudeTarget = DropAltitude();
                 if (!deployedCargo && (phase == FlightPhase.Approach || phase == FlightPhase.Aligning)
                     && Time.timeSinceLevelLoad - lastApproachRecalc > 1f)
                 {
@@ -676,7 +755,7 @@ namespace SupplyBuffetMod
                 float altitudeTarget = CruiseAltitude();
                 GlobalPosition aimPos = transportDestination.touchdownPoint;
                 aimPos.y = aimPos.y + altitudeTarget;
-                aircraft.autopilot.AutoAim(aimPos, true, false, false, 1f, 180f, true, altitudeTarget, Vector3.zero);
+                aircraft.autopilot.AutoAim(TerrainGuard.Raise(aircraft, aircraftParameters, aimPos), true, false, false, 1f, TransitBankLimit(), false, 0f, Vector3.zero);
             }
             EjectionCheck();
             TargetSearch();
@@ -686,59 +765,102 @@ namespace SupplyBuffetMod
         {
             controlInputs.throttle = aircraftParameters.cruiseThrottle;
             GlobalPosition aimPos = pointA;
-            aimPos.y = pointA.y + altitudeTarget;
-            aircraft.autopilot.AutoAim(aimPos, true, false, false, 0.85f, 135f, true, altitudeTarget, Vector3.zero);
+            aimPos.y = RunAimAltitude(altitudeTarget);
+            aircraft.autopilot.AutoAim(TerrainGuard.Raise(aircraft, aircraftParameters, aimPos), true, false, false, 0.85f, TransitBankLimit(), false, 0f, AssignedTargetVelocity());
             float distToA = FastMath.Distance(aircraft.GlobalPosition(), pointA);
-            if (distToA <= DescentDistance())
+            float distToTarget = FastMath.Distance(aircraft.GlobalPosition(), transportDestination.touchdownPoint);
+            float gateDist = distToA;
+            if (gateDist <= DescentDistance())
             {
                 if (phase != FlightPhase.Descent)
                 {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} descending for the drop run ({distToA:F0}m to Point A).");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} descending for the drop run ({gateDist:F0}m to Point A, {distToTarget:F0}m to the target).");
                     phase = FlightPhase.Descent;
                     UpdateStateDisplayName();
                 }
-                if (distToA <= aircraftParameters.turningRadius * 3f && phase != FlightPhase.Approach)
+                float handoff = aircraftParameters.turningRadius * 3f;
+                if (gateDist <= handoff)
                 {
-                    EnterStage(FlightPhase.Approach);
+                    if (phase != FlightPhase.Approach)
+                    {
+                        EnterStage(FlightPhase.Approach);
+                    }
                 }
                 return;
             }
-            if (phase == FlightPhase.Climb && aircraft.radarAlt >= altitudeTarget * 0.9f)
+            float heightAboveTarget = aircraft.GlobalPosition().y - transportDestination.touchdownPoint.y;
+            if (phase == FlightPhase.Climb && heightAboveTarget >= altitudeTarget * 0.9f)
             {
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} reached cruise altitude ({aircraft.radarAlt:F0}m).");
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} reached cruise altitude ({heightAboveTarget:F0}m above the target).");
                 phase = FlightPhase.Cruise;
                 UpdateStateDisplayName();
             }
             else if (phase == FlightPhase.Descent)
             {
-                phase = FlightPhase.Cruise;
-                UpdateStateDisplayName();
+                GlobalPosition gate = pointA;
+                Vector3 toGate = gate - aircraft.GlobalPosition();
+                bool passedGate = Vector3.Dot(aircraft.transform.forward, toGate) < 0f;
+                if (!passedGate && gateDist > DescentDistance() * DESCENT_ABORT_MARGIN)
+                {
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} climbing back to cruise; Point A is now {gateDist:F0}m away.");
+                    phase = FlightPhase.Cruise;
+                    UpdateStateDisplayName();
+                }
             }
         }
-        private void RunApproachPhase(float altitudeTarget)
+        private Vector3 runLineCorrection;
+        private float lastGovernorLog;
+        private string AltitudeTrace(float altitudeTarget)
         {
-            GlobalPosition joinPoint = ComputeJoinPoint();
-            float distToJoin = FastMath.Distance(aircraft.GlobalPosition(), joinPoint);
-            float approachSpeed = Mathf.Max(aircraftParameters.cornerSpeed + distToJoin * 0.02f,
-                                            aircraftParameters.landingSpeed * 1.9f);
-            controlInputs.throttle = Mathf.Clamp(0.5f - (aircraft.speed - approachSpeed) * 0.1f, 0f, aircraftParameters.cruiseThrottle);
-            GlobalPosition aimPos = joinPoint;
-            aimPos.y = pointA.y + altitudeTarget;
-            aircraft.autopilot.AutoAim(aimPos, true, false, false, 0.9f, 135f, true, altitudeTarget, Vector3.zero);
-            float capture = aircraftParameters.turningRadius;
-            Vector3 toJoin = joinPoint - aircraft.GlobalPosition();
-            bool passedJoin = distToJoin < capture && Vector3.Dot(aircraft.transform.forward, toJoin) < 0f;
-            if (passedJoin || distToJoin < capture * 0.5f)
-            {
-                float joinOffset = FastMath.Distance(joinPoint, runEntry);
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} reached the join point, turning onto the run (join offset {joinOffset:F0}m).");
-                EnterStage(FlightPhase.Aligning);
-                return;
-            }
-            if (Time.timeSinceLevelLoad - stageStartedAt > STAGE_TIMEOUT)
-            {
-                RestartRun($"could not reach the join point within {STAGE_TIMEOUT:F0}s");
-            }
+            float aim = RunAimAltitude(altitudeTarget);
+            return $"aim {aim:F0}m (floor {runFloorY:F0}, pointC {pointC.y:F0}) hold {altitudeTarget:F0}m";
+        }
+        private float TransitBankLimit()
+        {
+            return Plugin.Cfg(Plugin.TransitBankLimit, 110f);
+        }
+        private Vector3 MeanWind()
+        {
+            LevelInfo level = NetworkSceneSingleton<LevelInfo>.i;
+            if (level == null) return Vector3.zero;
+            Vector3 wind = level.GetWind();
+            wind.y = 0f;
+            return wind;
+        }
+        private float CrabAngle()
+        {
+            if (aircraft.rb == null) return 0f;
+            Vector3 vel = aircraft.rb.velocity; vel.y = 0f;
+            if (vel.sqrMagnitude < 1f) return 0f;
+            Vector3 nose = FlatNose();
+            if (nose.sqrMagnitude < 0.01f) return 0f;
+            return Vector3.SignedAngle(nose, vel, Vector3.up);
+        }
+        private float AlphaAngle()
+        {
+            if (aircraft.rb == null) return 0f;
+            Vector3 local = aircraft.transform.InverseTransformDirection(aircraft.rb.velocity);
+            if (local.sqrMagnitude < 1f) return 0f;
+            return -Mathf.Atan2(local.y, local.z) * Mathf.Rad2Deg;
+        }
+        private string FlowTrace()
+        {
+            Vector3 wind = MeanWind();
+            Vector3 across = Vector3.Cross(Vector3.up, approachAxis);
+            return $"wind {wind.magnitude:F0}m/s (along {Vector3.Dot(wind, approachAxis):F0}, cross {Vector3.Dot(wind, across):F0}) crab {CrabAngle():F0}deg alpha {AlphaAngle():F0}deg";
+        }
+        private void LogSpeedGovernor(string phase, float scheduled, float floor, float target, float dist)
+        {
+            if (!Plugin.Dbg) return;
+            if (Time.timeSinceLevelLoad - lastGovernorLog < MODE_CHECK_INTERVAL) return;
+            lastGovernorLog = Time.timeSinceLevelLoad;
+            Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} {phase}: speed {aircraft.speed:F0} target {target:F0} (sched {scheduled:F0}, floor {floor:F0}) throttle {controlInputs.throttle:F2} {FlowTrace()} dist {dist:F0}m");
+        }
+        private bool ModeCheckDue()
+        {
+            if (Time.timeSinceLevelLoad - lastModeCheck < MODE_CHECK_INTERVAL) return false;
+            lastModeCheck = Time.timeSinceLevelLoad;
+            return true;
         }
         private bool RunInProgress()
         {
@@ -748,113 +870,39 @@ namespace SupplyBuffetMod
                 || phase == FlightPhase.Aligning
                 || phase == FlightPhase.Drop;
         }
+        private void EnterTransitOrRun()
+        {
+            bool high = aircraft.radarAlt >= CruiseAltitude() * 0.9f;
+            if (UseDirectDrop())
+            {
+                EnterStage(FlightPhase.Cruise);
+                return;
+            }
+            EnterStage(FastMath.Distance(aircraft.GlobalPosition(), pointA) <= DescentDistance()
+                ? FlightPhase.Approach
+                : (high ? FlightPhase.Cruise : FlightPhase.Climb));
+        }
         private void EnterStage(FlightPhase newPhase)
         {
             phase = newPhase;
+            runLineCorrection = Vector3.zero;
             stageStartedAt = Time.timeSinceLevelLoad;
+            lastModeCheck = Time.timeSinceLevelLoad;
             alignedTime = 0f;
             reachedFinal = false;
             UpdateStateDisplayName();
-        }
-        private float BearingErrorToRun()
-        {
-            Vector3 toAimpoint = pointC - aircraft.GlobalPosition();
-            toAimpoint.y = 0f;
-            if (toAimpoint.sqrMagnitude < 1f) return 0f;
-            Vector3 nose = aircraft.transform.forward;
-            nose.y = 0f;
-            if (nose.sqrMagnitude < 0.01f) return 0f;
-            return Vector3.Angle(toAimpoint, nose);
-        }
-        private GlobalPosition RunLineAimPoint()
-        {
-            if (approachAxis.sqrMagnitude < 0.01f) return pointC;
-            Vector3 toC = pointC - aircraft.GlobalPosition();
-            toC.y = 0f;
-            float range = toC.magnitude;
-            Vector3 nose = aircraft.transform.forward;
-            nose.y = 0f;
-            if (nose.sqrMagnitude < 0.01f) return pointC;
-            GlobalPosition probe = aircraft.GlobalPosition() + nose.normalized * (LOOKAHEAD_BASE + range * LOOKAHEAD_SCALE);
-            Vector3 fromC = probe - pointC;
-            fromC.y = 0f;
-            return pointC + approachAxis * Vector3.Dot(fromC, approachAxis);
-        }
-        private float CrossTrackOffset()
-        {
-            if (approachAxis.sqrMagnitude < 0.01f) return 0f;
-            Vector3 fromEntry = aircraft.GlobalPosition() - runEntry;
-            fromEntry.y = 0f;
-            Vector3 lateral = fromEntry - approachAxis * Vector3.Dot(fromEntry, approachAxis);
-            return lateral.magnitude;
-        }
-        private void RestartRun(string reason)
-        {
-            runAttempts++;
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} abandoning the run ({reason}) - re-flying the join on {(assignedTargetUnit != null ? assignedTargetUnit.unitName : "the target")}, attempt {runAttempts}.");
-            if (runAttempts % RUN_ATTEMPT_WARN_INTERVAL == 0)
-            {
-                Plugin.Log.LogWarning($"[SupplyBuffetMod] {aircraft.unitName} is still re-flying the join after {runAttempts} attempts on {(assignedTargetUnit != null ? assignedTargetUnit.unitName : "its target")}.");
-            }
-            itemsReleased = 0;
-            gearDownForDrop = false;
-            ComputeApproachPoints();
-        }
-        private GlobalPosition ComputeJoinPoint()
-        {
-            if (approachAxis.sqrMagnitude < 0.01f) return runEntry;
-            Vector3 toAim = runEntry - aircraft.GlobalPosition();
-            toAim.y = 0f;
-            if (toAim.sqrMagnitude < 1f) return runEntry;
-            float misalign = Vector3.Angle(toAim, approachAxis);
-            float offset = (Mathf.Sin((misalign - 90f) * Mathf.Deg2Rad) + 1f) * aircraftParameters.turningRadius * 2f;
-            if (offset <= 0.01f) return runEntry;
-            return runEntry + Vector3.RotateTowards(-approachAxis * offset, -toAim, Mathf.PI / 2f, 0f);
-        }
-        private void RunAligningPhase(float altitudeTarget)
-        {
-            float distToC = FastMath.Distance(aircraft.GlobalPosition(), pointC);
-            float approachSpeed = Mathf.Max(aircraftParameters.cornerSpeed + distToC * 0.02f,
-                                            aircraftParameters.landingSpeed * 1.9f);
-            controlInputs.throttle = Mathf.Clamp(0.5f - (aircraft.speed - approachSpeed) * 0.1f, 0f, aircraftParameters.cruiseThrottle);
-            if (!reachedFinal && FastMath.InRange(runEntry, aircraft.GlobalPosition(), aircraftParameters.turningRadius * 0.5f))
-            {
-                reachedFinal = true;
-            }
-            GlobalPosition aimPos = reachedFinal ? RunLineAimPoint() : runEntry;
-            aimPos.y = (reachedFinal ? pointC.y : runEntry.y) + altitudeTarget;
-            aircraft.autopilot.AutoAim(aimPos, true, false, false, 1f, 135f, true, altitudeTarget, Vector3.zero);
-            float bearingError = BearingErrorToRun();
-            float crossTrack = CrossTrackOffset();
-            float crossTrackLimit = aircraftParameters.turningRadius * 0.25f;
-            bool onLine = bearingError < ALIGN_TOLERANCE && crossTrack < crossTrackLimit;
-            alignedTime = onLine ? alignedTime + Time.fixedDeltaTime : 0f;
-            if (reachedFinal && alignedTime > ALIGN_HOLD)
-            {
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} settled on the run line (bearing error {bearingError:F0}deg, cross-track {crossTrack:F0}m); starting the drop run.");
-                BeginDropPhase();
-                return;
-            }
-            float pastEntry = Vector3.Dot(aircraft.GlobalPosition() - runEntry, approachAxis);
-            if (!reachedFinal && pastEntry > aircraftParameters.turningRadius)
-            {
-                RestartRun($"overshot the roll-out point by {pastEntry:F0}m without establishing on the run line");
-            }
-            else if (Vector3.Dot(pointC - aircraft.GlobalPosition(), approachAxis) < 0f)
-            {
-                RestartRun("passed Point C before settling on the run line");
-            }
-            else if (Time.timeSinceLevelLoad - stageStartedAt > STAGE_TIMEOUT)
-            {
-                RestartRun($"could not line up within {STAGE_TIMEOUT:F0}s (bearing error {bearingError:F0}deg, cross-track {crossTrack:F0}m)");
-            }
         }
         private void BeginDropPhase()
         {
             itemsReleased = 0;
             nextReleaseAt = 0f;
             int aboard = CargoDemand.ItemsAboard(aircraft);
-            if (assignedTargetUnit == null)
+            if (directDrop)
+            {
+                itemsToRelease = aboard;
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} dry delivery for {(assignedTargetUnit != null ? assignedTargetUnit.unitName : "a drop point")}: releasing the whole load, {aboard} item(s).");
+            }
+            else if (assignedTargetUnit == null)
             {
                 itemsToRelease = Mathf.Min(1, aboard);
             }
@@ -864,32 +912,55 @@ namespace SupplyBuffetMod
                 if (SupplyFullRestore.IsFullRestore(cargoKey))
                 {
                     itemsToRelease = Mathf.Min(1, aboard);
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} dropping 1 for {assignedTargetUnit.unitName}: '{cargoKey}' is a full-restore supply item.");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} dropping 1 for {assignedTargetUnit.unitName}: '{cargoKey}' is a full-restore supply item.");
                 }
                 else if (missionKind == MissionKind.NavalSupply)
                 {
-                    float sensitivity = (Plugin.RearmRequestSensitivity != null) ? Plugin.RearmRequestSensitivity.Value : 0.999f;
+                    float sensitivity = Plugin.Cfg(Plugin.RearmRequestSensitivity, 0.5f);
                     float maxCapacity = assignedTargetUnit.TryGetComponent(out Rearmer targetRearmer)
                         ? targetRearmer.GetMaxCapacity()
                         : CargoDemand.FullLoadMass(assignedTargetUnit);
                     float threshold = (1f - sensitivity) * maxCapacity;
                     float perItem = CargoDemand.ItemCapacity(true, cargoKey);
                     itemsToRelease = (threshold > perItem) ? aboard : Mathf.Min(1, aboard);
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} sizing wet drop for {assignedTargetUnit.unitName}: threshold {threshold:F0} (maxCapacity {maxCapacity:F0}) vs {perItem:F0} per crate -> {itemsToRelease} of {aboard} aboard.");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} sizing wet drop for {assignedTargetUnit.unitName}: threshold {threshold:F0} (maxCapacity {maxCapacity:F0}) vs {perItem:F0} per crate -> {itemsToRelease} of {aboard} aboard.");
+                }
+                else if (CargoDemand.IsPalletStick(cargoKey))
+                {
+                    itemsToRelease = aboard;
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} dropping the whole stick for {assignedTargetUnit.unitName}: '{cargoKey}' is a pallet stick -> {itemsToRelease} of {aboard} aboard.");
                 }
                 else
                 {
                     float demand = CargoDemand.FullLoadMass(assignedTargetUnit);
                     float perItem = CargoDemand.ItemCapacity(false, cargoKey);
                     itemsToRelease = CargoDemand.ItemsToRelease(demand, perItem, aboard);
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} sizing drop for {assignedTargetUnit.unitName}: demand {demand:F0} / {perItem:F0} per item -> {itemsToRelease} of {aboard} aboard.");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} sizing drop for {assignedTargetUnit.unitName}: demand {demand:F0} / {perItem:F0} per item -> {itemsToRelease} of {aboard} aboard.");
                 }
             }
-            dropAborts = 0;
             lastDropAbortTime = 0f;
+            releaseFaultSince = 0f;
             gearDownForDrop = (missionKind == MissionKind.RunwayRepair);
             runStartTouchdown = transportDestination.touchdownPoint;
             EnterStage(FlightPhase.Drop);
+        }
+        private SortieCategory? LoadedDryCategory()
+        {
+            if (missionKind == MissionKind.NavalSupply || IsRunwayRepair) return null;
+            if (!TryGetCargoStation(out WeaponStation station) || station == null) return null;
+            if (station.FullAmmo <= 0) return null;
+            return (station.FullAmmo <= 1) ? SortieCategory.DryStatic : SortieCategory.DryMoving;
+        }
+        private GlobalPosition? DryHomeBase()
+        {
+            if (missionKind == MissionKind.NavalSupply || IsRunwayRepair) return null;
+            if (!ResupplyCensus.TryGetHomeBase(aircraft, out Airbase home) || home == null) return null;
+            return home.center.GlobalPosition();
+        }
+        private float DryMinDeliveryRange()
+        {
+            if (missionKind == MissionKind.NavalSupply || IsRunwayRepair) return 0f;
+            return Plugin.Cfg(Plugin.ThresholdB, 15000f);
         }
         private string CurrentCargoMountKey()
         {
@@ -904,50 +975,66 @@ namespace SupplyBuffetMod
         {
             if (itemsToRelease <= 0)
             {
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} has no cargo to release; ending the run.");
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} has no cargo to release; ending the run.");
                 gearDownForDrop = false;
                 phase = FlightPhase.Exit;
                 lastCargoDroppedTime = Time.timeSinceLevelLoad;
                 UpdateStateDisplayName();
                 return;
             }
-            controlInputs.throttle = (missionKind == MissionKind.RunwayRepair) ? 0.72f : 1f;
+            if (missionKind == MissionKind.RunwayRepair)
+            {
+                controlInputs.throttle = 0.72f;
+            }
+            else
+            {
+                float runSpeed = ApproachSpeedFloor();
+                controlInputs.throttle = Mathf.Clamp(0.5f - (aircraft.speed - runSpeed) * 0.1f, 0f, 1f);
+                if (Plugin.Dbg)
+                {
+                    LogSpeedGovernor($"Dropping corr {runLineCorrection.magnitude:F1}m {AltitudeTrace(altitudeTarget)}", runSpeed, runSpeed, runSpeed,
+                                     FastMath.Distance(aircraft.GlobalPosition(), transportDestination.touchdownPoint));
+                }
+            }
             Vector3 toC = pointC - aircraft.GlobalPosition();
             toC.y = 0f;
             Vector3 runVel = aircraft.rb.velocity;
             runVel.y = 0f;
-            bool followTerrain = toC.sqrMagnitude < 1f || runVel.sqrMagnitude < 1f
-                || Vector3.Angle(runVel, toC) > 20f;
-            GlobalPosition aimPos = RunLineAimPoint();
-            aimPos.y = (followTerrain ? pointC.y : Mathf.Max(pointC.y, runFloorY)) + altitudeTarget;
-            aircraft.autopilot.AutoAim(aimPos, true, false, false, 1.1f, 135f, followTerrain, altitudeTarget, Vector3.zero);
+            Vector3 toTouchdownNow = transportDestination.touchdownPoint - aircraft.GlobalPosition();
+            toTouchdownNow.y = 0f;
+            UpdateRunLineCorrection(toTouchdownNow.magnitude);
+                GlobalPosition aimPos = RunLineAimPoint() - runLineCorrection;
+                aimPos.y = RunAimAltitude(altitudeTarget);
+            aircraft.autopilot.AutoAim(TerrainGuard.Raise(aircraft, aircraftParameters, aimPos), true, false, false, 1.01f, 65f, false, 0f, Vector3.zero);
             Vector3 toTarget = transportDestination.touchdownPoint - aircraft.GlobalPosition();
             toTarget.y = 0f;
             float horizDist = toTarget.magnitude;
-            if (!deployedCargo && horizDist < 3000f && Time.timeSinceLevelLoad - lastBayOpenPing > 0.5f
-                && TryGetCargoStation(out WeaponStation cargoStation))
-            {
-                lastBayOpenPing = Time.timeSinceLevelLoad;
-                foreach (Weapon w in cargoStation.Weapons)
-                {
-                    Hardpoint hp = (w != null) ? HardpointRef(w) : null;
-                    if (hp != null) hp.SpringOpenBayDoors();
-                }
-            }
-            bool reachedB = Vector3.Dot(aircraft.GlobalPosition() - pointB, approachAxis) >= 0f;
+            if (!deployedCargo) PingCargoBayDoors(horizDist);
+            ReleaseInputs release = BuildReleaseInputs(wet: true, runAxis: approachAxis);
+            float navalB = CargoRelease.Distance(release);
+            bool reachedB = CargoRelease.RingReached(release, navalB, out float navalSlant, out float navalTrip)
+                            || CargoRelease.PastTarget(release);
+            float navalHeight = Mathf.Max(-release.ToTarget.y, 0f);
             bool outOfAttempts = dropAborts >= MaxAirdropAttempts();
+            bool atReleasePoint = reachedB;
+            string releaseFault = null;
+            bool airdropReady = (missionKind == MissionKind.RunwayRepair) || AirdropReleaseReady(out releaseFault);
+            if (airdropReady || !atReleasePoint) releaseFaultSince = 0f;
+            else if (releaseFaultSince == 0f) releaseFaultSince = Time.timeSinceLevelLoad;
             bool releaseReady = (missionKind == MissionKind.RunwayRepair)
-                ? RunwayReleaseReady()
-                : (reachedB && (outOfAttempts || AirdropReleaseReady(out _)));
+                ? CargoRelease.RunwayReady(release, DropAltitude())
+                : (atReleasePoint && (outOfAttempts || airdropReady));
             if (itemsReleased == 0 && releaseReady)
             {
-                float horizToTarget = FastMath.Distance(aircraft.GlobalPosition(), transportDestination.touchdownPoint);
+                Vector3 horizVec = transportDestination.touchdownPoint - aircraft.GlobalPosition();
+                horizVec.y = 0f;
+                float horizToTarget = horizVec.magnitude;
                 float sink = (aircraft.rb != null) ? aircraft.rb.velocity.y : 0f;
-                float roll = Mathf.Abs(Mathf.DeltaAngle(aircraft.transform.eulerAngles.z, 0f));
+                float roll = RollDegrees;
                 float lead = (assignedTargetUnit != null)
                     ? FastMath.Distance(transportDestination.touchdownPoint, assignedTargetUnit.GlobalPosition())
                     : 0f;
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} releasing {itemsToRelease} item(s): horiz-to-target={horizToTarget:F0}m alt={(aircraft.GlobalPosition().y - pointC.y):F0}m radarAlt={aircraft.radarAlt:F1}m speed={aircraft.speed:F0}m/s roll={roll:F0}deg vs={sink:F1}m/s lead={lead:F0}m forced={outOfAttempts}");
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} releasing {itemsToRelease} item(s): {release.Crate} horiz-to-target={horizToTarget:F0}m alt={(aircraft.GlobalPosition().y - pointC.y):F0}m radarAlt={aircraft.radarAlt:F1}m speed={aircraft.speed:F0}m/s roll={roll:F0}deg vs={sink:F1}m/s lead={lead:F0}m wind={MeanWind().magnitude:F1}m/s windOff={transportDestination.windOffset.magnitude:F0}m slant={navalSlant:F0}m trip={navalTrip:F0}m(b={navalB:F0} h={navalHeight:F0}) forced={outOfAttempts}");
             }
             if (itemsReleased > 0 || releaseReady)
             {
@@ -961,13 +1048,18 @@ namespace SupplyBuffetMod
             }
             else if (itemsReleased == 0)
             {
-                if (reachedB && missionKind != MissionKind.RunwayRepair
+                const float faultGrace = AIRDROP_FAULT_GRACE;
+                bool faultHeld = !airdropReady && releaseFaultSince > 0f
+                    && Time.timeSinceLevelLoad - releaseFaultSince >= faultGrace;
+                bool faultIsHeight = !string.IsNullOrEmpty(releaseFault) && releaseFault.StartsWith("height ");
+                if (atReleasePoint && missionKind != MissionKind.RunwayRepair
                     && Time.timeSinceLevelLoad - lastDropAbortTime >= DROP_ABORT_INTERVAL
-                    && !AirdropReleaseReady(out string releaseFault))
+                    && faultHeld && !faultIsHeight)
                 {
                     dropAborts++;
                     lastDropAbortTime = Time.timeSinceLevelLoad;
-                    RestartRun($"unstable at the release point ({releaseFault}), abort {dropAborts} of {MaxAirdropAttempts()}");
+                    string why = $"unstable at the release point ({releaseFault}), abort {dropAborts} of {MaxAirdropAttempts()}";
+                    RestartRun(why);
                 }
                 else if (Vector3.Dot(pointC - aircraft.GlobalPosition(), approachAxis) < 0f)
                 {
@@ -983,67 +1075,37 @@ namespace SupplyBuffetMod
                 }
             }
         }
+        private Vector3 AssignedTargetVelocity()
+        {
+            if (assignedTargetUnit == null || assignedTargetUnit.rb == null) return Vector3.zero;
+            return assignedTargetUnit.rb.velocity;
+        }
         private int MaxAirdropAttempts()
         {
-            return (Plugin.ChimeraAirdropMaxAttempts != null) ? Plugin.ChimeraAirdropMaxAttempts.Value : 3;
+            return Plugin.Cfg(Plugin.ChimeraAirdropMaxAttempts, 3);
         }
         private bool AirdropReleaseReady(out string fault)
         {
-            float maxRoll = (Plugin.ChimeraAirdropMaxRoll != null) ? Plugin.ChimeraAirdropMaxRoll.Value : 10f;
-            float roll = Mathf.Abs(Mathf.DeltaAngle(aircraft.transform.eulerAngles.z, 0f));
+            return NavalReleaseReady(out fault);
+        }
+        private bool AttitudeReleaseReady(out string fault)
+        {
+            float maxRoll = Plugin.Cfg(Plugin.ChimeraAirdropMaxRoll, 20f);
+            float roll = RollDegrees;
             if (roll > maxRoll)
             {
                 fault = $"roll {roll:F0}deg > {maxRoll:F0}";
                 return false;
             }
-            float maxVertical = (Plugin.ChimeraAirdropMaxVerticalSpeed != null) ? Plugin.ChimeraAirdropMaxVerticalSpeed.Value : 10f;
+            float maxVertical = Plugin.Cfg(Plugin.ChimeraAirdropMaxVerticalSpeed, 10f);
             float sink = (aircraft.rb != null) ? Mathf.Abs(aircraft.rb.velocity.y) : 0f;
             if (sink > maxVertical)
             {
                 fault = $"vertical speed {sink:F0}m/s > {maxVertical:F0}";
                 return false;
             }
-            float maxCrossTrack = (Plugin.ChimeraAirdropMaxCrossTrack != null) ? Plugin.ChimeraAirdropMaxCrossTrack.Value : 150f;
-            float crossTrack = CrossTrackOffset();
-            if (crossTrack > maxCrossTrack)
-            {
-                fault = $"cross-track {crossTrack:F0}m > {maxCrossTrack:F0}";
-                return false;
-            }
-            Vector3 toTarget = transportDestination.touchdownPoint - aircraft.GlobalPosition();
-            toTarget.y = 0f;
-            Vector3 horizVel = (aircraft.rb != null) ? aircraft.rb.velocity : Vector3.zero;
-            horizVel.y = 0f;
-            if (toTarget.sqrMagnitude > 1f && horizVel.sqrMagnitude > 1f)
-            {
-                float track = Vector3.Angle(toTarget, horizVel);
-                if (track >= 20f)
-                {
-                    fault = $"track angle {track:F0}deg >= 20";
-                    return false;
-                }
-            }
             fault = string.Empty;
             return true;
-        }
-        private bool RunwayReleaseReady()
-        {
-            float targetAlt = DropAltitude();
-            float tolerance = Plugin.ChimeraRunwayDropTolerance != null ? Plugin.ChimeraRunwayDropTolerance.Value : 2f;
-            if (Mathf.Abs(aircraft.radarAlt - targetAlt) > tolerance) return false;
-            float minSpeed = Plugin.ChimeraRunwayMinReleaseSpeed != null ? Plugin.ChimeraRunwayMinReleaseSpeed.Value : 75f;
-            float maxSpeed = Plugin.ChimeraRunwayMaxReleaseSpeed != null ? Plugin.ChimeraRunwayMaxReleaseSpeed.Value : 190f;
-            if (aircraft.speed < minSpeed || aircraft.speed > maxSpeed) return false;
-            float maxRoll = Plugin.ChimeraRunwayMaxRoll != null ? Plugin.ChimeraRunwayMaxRoll.Value : 18f;
-            if (Mathf.Abs(Mathf.DeltaAngle(aircraft.transform.eulerAngles.z, 0f)) > maxRoll) return false;
-            float maxVertical = Plugin.ChimeraRunwayMaxVerticalSpeed != null ? Plugin.ChimeraRunwayMaxVerticalSpeed.Value : 30f;
-            if (aircraft.rb != null && Mathf.Abs(aircraft.rb.velocity.y) > maxVertical) return false;
-            Vector3 toTarget = transportDestination.touchdownPoint - aircraft.GlobalPosition();
-            toTarget.y = 0f;
-            Vector3 horizVel = (aircraft.rb != null) ? aircraft.rb.velocity : Vector3.zero;
-            horizVel.y = 0f;
-            if (toTarget.sqrMagnitude <= 1f || horizVel.sqrMagnitude <= 1f) return false;
-            return Vector3.Angle(toTarget, horizVel) < 20f;
         }
         private void ReleaseCargoStep()
         {
@@ -1052,18 +1114,72 @@ namespace SupplyBuffetMod
             if (now < nextReleaseAt) return;
             if (!TryGetCargoStation(out WeaponStation station)) return;
             aircraft.weaponManager.currentWeaponStation = station;
+            int ammoBefore = station.Ammo;
             station.LaunchMount(aircraft, null, transportDestination.touchdownPoint);
+            if (station.Ammo >= ammoBefore)
+            {
+                Plugin.Log.LogWarning($"[SupplyBuffetMod] {LogName} released a crate but the station ammo did not drop ({ammoBefore}); counting it anyway.");
+            }
             itemsReleased++;
-            nextReleaseAt = now + (Plugin.ChimeraReleaseInterval != null ? Plugin.ChimeraReleaseInterval.Value : 0.35f);
+            nextReleaseAt = now + Plugin.Cfg(Plugin.ChimeraReleaseInterval, 0.2f);
             lastCargoDroppedTime = now;
             if (itemsReleased == 1) OnFirstRelease();
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} released cargo {itemsReleased}/{itemsToRelease}.");
+            Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} released cargo {itemsReleased}/{itemsToRelease}.");
         }
         private static bool IsHoldingPosition(Unit unit)
         {
             if (unit is Ship ship) return ship.holdPosition;
             if (unit is GroundVehicle gv) return gv.GetHoldPosition();
             return true;
+        }
+        private void CheckBattleDamage()
+        {
+            if (jettisoning)
+            {
+                JettisonStep();
+                return;
+            }
+            if (!damageWatch.ShouldReturn()) return;
+            jettisoning = true;
+            nextJettisonAt = 0f;
+            assignedTargetUnit = null;      
+            Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} battle damage: {damageWatch.Describe()}; jettisoning cargo and returning to base.");
+            JettisonStep();
+        }
+        private void JettisonStep()
+        {
+            if (!TryGetCargoStation(out WeaponStation station))
+            {
+                jettisoning = false;
+                if (phase != FlightPhase.Returning)
+                {
+                    phase = FlightPhase.Returning;
+                    UpdateStateDisplayName();
+                }
+                return;
+            }
+            float now = Time.timeSinceLevelLoad;
+            if (now < nextJettisonAt) return;
+            nextJettisonAt = now + Plugin.Cfg(Plugin.ChimeraReleaseInterval, 0.2f);
+            aircraft.weaponManager.currentWeaponStation = station;
+            station.LaunchMount(aircraft, null, aircraft.GlobalPosition());
+        }
+        private ReleaseInputs BuildReleaseInputs(bool wet, Vector3 runAxis)
+        {
+            TryGetCargoStation(out WeaponStation station);
+            return new ReleaseInputs
+            {
+                ToTarget = transportDestination.touchdownPoint - aircraft.GlobalPosition(),
+                Velocity = (aircraft.rb != null) ? aircraft.rb.velocity : Vector3.zero,
+                RunAxis = runAxis,
+                Speed = (aircraft.rb != null) ? aircraft.rb.velocity.magnitude : aircraft.speed,
+                RollDegrees = RollDegrees,
+                RadarAlt = aircraft.radarAlt,
+                VerticalSpeed = (aircraft.rb != null) ? aircraft.rb.velocity.y : 0f,
+                Wet = wet,
+                Crate = CargoRelease.CrateOf(station),
+                CargoKey = CurrentCargoMountKey()
+            };
         }
         private bool TryGetCargoStation(out WeaponStation station)
         {
@@ -1084,21 +1200,54 @@ namespace SupplyBuffetMod
             Vector3 velDir = aircraft.rb.velocity;
             velDir.y = 0f;
             GlobalPosition aimPos = aircraft.GlobalPosition() + velDir.normalized * 2000f;
-            aimPos.y = aircraft.GlobalPosition().y + altitudeTarget;
-            aircraft.autopilot.AutoAim(aimPos, true, false, false, 1f, 180f, true, altitudeTarget, Vector3.zero);
-            controlInputs.throttle = 1f;
+            bool moreToDeliver = CargoDemand.ItemsAboard(aircraft) > 0;
+            aimPos.y = aircraft.GlobalPosition().y + (moreToDeliver ? 0f : altitudeTarget);
+            aircraft.autopilot.AutoAim(TerrainGuard.Raise(aircraft, aircraftParameters, aimPos), true, false, false, 1f, TransitBankLimit(), false, 0f, Vector3.zero);
+            if (moreToDeliver)
+            {
+                if (directDrop)
+                {
+                    controlInputs.throttle = Mathf.Max(dropThrottleHold, 0.05f);
+                }
+                else
+                {
+                    float turnSpeed = Mathf.Max(aircraftParameters.cornerSpeed
+                        * (Plugin.Cfg(Plugin.DryTurnCornerSpeedFraction, 0.85f)),
+                        aircraftParameters.landingSpeed * 1.2f);
+                    if (aircraft.speed > turnSpeed * 1.15f)
+                    {
+                        controlInputs.throttle = 0f;
+                    }
+                    else
+                    {
+                        controlInputs.throttle = Mathf.Clamp(aircraftParameters.cruiseThrottle + (turnSpeed - aircraft.speed) * 0.015f, 0.05f, 1f);
+                    }
+                }
+                controlInputs.brake = 0f;
+            }
+            else if (directDrop)
+            {
+                controlInputs.throttle = Mathf.Max(dropThrottleHold, 0.05f);
+                controlInputs.brake = 0f;
+            }
+            else
+            {
+                controlInputs.throttle = 1f;
+                controlInputs.brake = 0f;
+            }
             if (Time.timeSinceLevelLoad - lastCargoDroppedTime <= postDropHold) return;
-            if (CargoDemand.ItemsAboard(aircraft) > 0 && aircraft.NetworkHQ != null
+            if (!directDrop && CargoDemand.ItemsAboard(aircraft) > 0 && aircraft.NetworkHQ != null
                 && ResupplyMissionManager.TryGetUnassignedUnitNeedingRearm(
                        aircraft.NetworkHQ.RearmMissionController,
                        missionKind == MissionKind.NavalSupply,
                        missionKind != MissionKind.NavalSupply,
                        aircraft, out Unit nextTarget))
             {
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} has cargo remaining; re-tasking to {nextTarget.unitName}.");
+                Plugin.Log.LogInfo($"[SB|D8] {LogName} has cargo remaining; re-tasking to {nextTarget.unitName}.");
                 assignedTargetUnit = nextTarget;
                 runAttempts = 0;
-                ResupplyMissionManager.AssignChimera(nextTarget, aircraft);
+                dropAborts = 0;   
+                ResupplyMissionManager.AssignTransport(nextTarget, aircraft);
                 missionTargetLabel = nextTarget.unitName;
                 deployedCargo = false;
                 itemsReleased = 0;
@@ -1109,37 +1258,73 @@ namespace SupplyBuffetMod
                 ComputeApproachPoints();
                 return;
             }
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} completed airdrop pass. Returning to base.");
+            Plugin.Log.LogInfo($"[SB|D9] {LogName} completed airdrop pass. Returning to base.");
             phase = FlightPhase.Returning;
             UpdateStateDisplayName();
         }
         private void RunReturnPhase()
         {
+            bool threat = IncomingMissile();
+            float retry = Plugin.Cfg(Plugin.LandingRetrySeconds, 10f);
+            float stamp = LandingHandoffStamp;
+            bool cooling = stamp > 0f && Time.timeSinceLevelLoad - stamp < retry;
+            if (threat || cooling)
+            {
+                FlyEgressToBase(threat);
+                return;
+            }
+            LandingHandoffStamp = Time.timeSinceLevelLoad;
             if (pilot.AILandingState == null)
             {
                 pilot.AILandingState = new AIPilotLandingState();
             }
             pilot.SwitchState(pilot.AILandingState);
         }
+        private bool IncomingMissile()
+        {
+            MissileWarning warning = aircraft.GetMissileWarningSystem();
+            List<Missile> missiles = (warning != null) ? warning.knownMissiles : null;
+            if (missiles == null) return false;
+            for (int i = 0; i < missiles.Count; i++)
+            {
+                Missile m = missiles[i];
+                if (m == null || m.disabled) continue;
+                if (m.targetID.Equals(aircraft.persistentID)) return true;
+            }
+            return false;
+        }
+        private void FlyEgressToBase(bool threat)
+        {
+            aircraft.SetFlightAssist(true);
+            if (aircraft.gearDeployed) aircraft.SetGear(false);
+            controlInputs.throttle = threat ? 1f : aircraftParameters.cruiseThrottle;
+            controlInputs.brake = 0f;
+            if (nearestAirbase == null || nearestAirbase.center == null) return;
+            GlobalPosition aim = nearestAirbase.center.GlobalPosition();
+            aim.y += CruiseAltitude();
+            aircraft.autopilot.AutoAim(TerrainGuard.Raise(aircraft, aircraftParameters, aim), true, false, false, 1f, 60f, false, 0f, Vector3.zero);
+        }
         private void OnFirstRelease()
         {
+            dropThrottleHold = controlInputs.throttle;
             int remaining = CargoDemand.ItemsAboard(aircraft);
-            float holdBase = (Plugin.PostDropHoldBase != null) ? Plugin.PostDropHoldBase.Value : POST_DROP_BASE;
-            float holdPerCrate = (Plugin.PostDropHoldPerCrate != null) ? Plugin.PostDropHoldPerCrate.Value : POST_DROP_PER_ITEM;
-            postDropHold = holdBase + holdPerCrate * remaining;
+            float holdBase = Plugin.Cfg(Plugin.PostDropHoldBase, POST_DROP_BASE);
+            float holdPerCrate = Plugin.Cfg(Plugin.PostDropHoldPerCrate, POST_DROP_PER_ITEM);
+            postDropHold = (remaining > 0) ? holdBase : holdBase + holdPerCrate * remaining;
             Plugin.TriggerControlNullifier(aircraft, postDropHold);
-            if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+            if (Plugin.Dbg)
             {
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} holding the drop line for {postDropHold:F0}s ({remaining} crate(s) still aboard).");
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} holding the drop line for {postDropHold:F0}s ({remaining} crate(s) still aboard).");
             }
             defense.TriggerDropBurst();
             pilot.flightInfo.LastCargoDelivery = Time.timeSinceLevelLoad;
             pilot.flightInfo.EnemyContact = true;
             deployedCargo = true;
+            dropPassesReleased++;
             if (assignedTargetUnit != null)
             {
                 ResupplyDispatcher.MarkDropped(assignedTargetUnit);
-                ResupplyMissionManager.UnassignChimera(assignedTargetUnit);
+                ResupplyMissionManager.UnassignTransport(assignedTargetUnit);
                 assignedTargetUnit = null;
             }
         }
@@ -1161,7 +1346,7 @@ namespace SupplyBuffetMod
             }
             if (flag)
             {
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] Ejection condition met for {aircraft.unitName}. Ejecting!");
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] Ejection condition met for {LogName}. Ejecting!");
                 pilot.aircraft.StartEjectionSequence();
             }
         }
@@ -1207,7 +1392,7 @@ namespace SupplyBuffetMod
                     pilot.flightInfo.EnemyContact = true;
                     currentTargetTracking = aircraft.NetworkHQ.GetTrackingData(currentTarget.persistentID);
                     aircraft.weaponManager.AddTargetList(currentTarget);
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} target changed to {currentTarget.unitName}");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} target changed to {currentTarget.unitName}");
                 }
             }
         }
@@ -1254,7 +1439,7 @@ namespace SupplyBuffetMod
                 aircraft.weaponManager.TargetListChanged();
                 if (num3 > 0)
                 {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} defending with missiles against {currentTarget.unitName}!");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} defending with missiles against {currentTarget.unitName}!");
                     pilot.Fire();
                     lastTargetAssessTime = Time.timeSinceLevelLoad - 2f;
                     lastFiredTime = Time.timeSinceLevelLoad;
@@ -1266,12 +1451,13 @@ namespace SupplyBuffetMod
         }
         public override void LeaveState()
         {
+            Plugin.Log.LogInfo($"[SupplyBuffetMod] {LogName} left AIFixedWingTransportState (phase={phase}, jettisoning={jettisoning}, aircraft.disabled={(aircraft != null ? aircraft.disabled.ToString() : "null")}).");
             if (defense != null) defense.Stop();
+            damageWatch.Detach();
             if (aircraft != null && aircraft.NetworkHQ != null)
             {
                 aircraft.NetworkHQ.DeregisterDropZone(transportDestination.touchdownPoint);
             }
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} left AIFixedWingTransportState.");
         }
     }
 }   

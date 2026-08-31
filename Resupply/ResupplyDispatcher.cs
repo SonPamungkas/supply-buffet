@@ -1,3 +1,4 @@
+﻿
 using System;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
@@ -15,8 +16,10 @@ namespace SupplyBuffetMod
         public static void MarkRearmed(Unit unit) => Stamp(LastRearm, unit);
         public static void MarkDropped(Unit unit) => Stamp(LastDrop, unit);
         public static void MarkDispatched(Unit unit) => Stamp(LastDispatch, unit);
-        public static bool IsOnCooldown(Unit unit) => WithinCooldown(unit, MostRecent(unit, includeDispatch: true));
-        public static bool IsRecentlyServed(Unit unit) => WithinCooldown(unit, MostRecent(unit, includeDispatch: false));
+        public static bool IsOnCooldown(Unit unit)
+            => WithinCooldown(unit, MostRecent(unit, includeDispatch: true), DispatchCooldown(unit));
+        public static bool IsRecentlyServed(Unit unit)
+            => WithinCooldown(unit, MostRecent(unit, includeDispatch: false), ReserviceCooldown(unit));
         private const float TOPUP_FRACTION = 0.25f;
         private const float TOPUP_FLOOR_SECONDS = 15f;
         private static bool StillInDeficit(Unit unit)
@@ -25,22 +28,26 @@ namespace SupplyBuffetMod
             if (Plugin.TopUpUntilFull == null || !Plugin.TopUpUntilFull.Value) return false;
             return unit.HasRequestedRearm;
         }
-        private static float EffectiveCooldown(Unit unit)
+        private static float DispatchCooldown(Unit unit)
         {
-            float full = Plugin.UnitCooldown != null ? Plugin.UnitCooldown.Value : 0f;
+            float full = Plugin.Cfg(Plugin.UnitCooldown, 60f);
             if (!StillInDeficit(unit)) return full;
             return Mathf.Min(full, Mathf.Max(TOPUP_FLOOR_SECONDS, full * TOPUP_FRACTION));
+        }
+        private static float ReserviceCooldown(Unit unit)
+        {
+            return Plugin.Cfg(Plugin.ReserviceCooldown, 1f);
         }
         public static float Remaining(Unit unit)
         {
             if (unit == null || Plugin.UnitCooldown == null) return 0f;
-            float remaining = EffectiveCooldown(unit) - (Time.timeSinceLevelLoad - MostRecent(unit, includeDispatch: true));
+            float remaining = DispatchCooldown(unit) - (Time.timeSinceLevelLoad - MostRecent(unit, includeDispatch: true));
             return remaining > 0f ? remaining : 0f;
         }
-        private static bool WithinCooldown(Unit unit, float stamp)
+        private static bool WithinCooldown(Unit unit, float stamp, float window)
         {
-            if (unit == null || Plugin.UnitCooldown == null) return false;
-            return Time.timeSinceLevelLoad - stamp < EffectiveCooldown(unit);
+            if (unit == null || window <= 0f) return false;
+            return Time.timeSinceLevelLoad - stamp < window;
         }
         private static float MostRecent(Unit unit, bool includeDispatch)
         {
@@ -62,7 +69,7 @@ namespace SupplyBuffetMod
             if (Plugin.ResupplyEnabled != null && !Plugin.ResupplyEnabled.Value) return;
             if (IsOnCooldown(requester))
             {
-                if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+                if (Plugin.Dbg)
                 {
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] Resupply for '{requester.unitName}' on cooldown ({Remaining(requester):F0}s left).");
                 }
@@ -81,7 +88,7 @@ namespace SupplyBuffetMod
         static void Postfix(Unit __instance)
         {
             ResupplyDispatcher.MarkRearmed(__instance);
-            if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+            if (Plugin.Dbg)
             {
                 Plugin.Log.LogInfo($"[SupplyBuffetMod] Unit '{__instance.unitName}' rearmed at {Time.timeSinceLevelLoad:F1}s");
             }

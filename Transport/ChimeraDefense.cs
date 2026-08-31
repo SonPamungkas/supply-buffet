@@ -63,7 +63,7 @@ namespace SupplyBuffetMod
         public void TriggerDropBurst()
         {
             if (burstsRemaining > 0) return;
-            burstsRemaining = Plugin.FlareBurstCount != null ? Plugin.FlareBurstCount.Value : 0;
+            burstsRemaining = Plugin.Cfg(Plugin.FlareBurstCount, 10);
             nextDropBurstAt = Time.timeSinceLevelLoad;
         }
         private void UpdateDropBurst()
@@ -80,7 +80,7 @@ namespace SupplyBuffetMod
             aircraft.countermeasureManager.PopFlares();
             holdUntil = now + 0.2f;
             burstsRemaining--;
-            nextDropBurstAt = now + (Plugin.FlareBurstInterval != null ? Plugin.FlareBurstInterval.Value : 0.5f);
+            nextDropBurstAt = now + Plugin.Cfg(Plugin.FlareBurstInterval, 0.5f);
         }
         private bool ResolveJammer()
         {
@@ -113,7 +113,7 @@ namespace SupplyBuffetMod
             if (Plugin.JammerEnabled == null || !Plugin.JammerEnabled.Value) return;
             if (!ResolveJammer()) return;
             float now = Time.timeSinceLevelLoad;
-            float range = Plugin.JammerRange != null ? Plugin.JammerRange.Value : 17000f;
+            float range = Plugin.Cfg(Plugin.JammerRange, 17000f);
             if (now >= nextJammerScan)
             {
                 nextJammerScan = now + JAMMER_SCAN_INTERVAL;

@@ -20,32 +20,46 @@ namespace SupplyBuffetMod
             Unit target = TargetSearchResultsRef(__instance).target;
             if (target == null) return;
             string key = aircraft.definition.jsonKey;
-            if (key == "UtilityHelo1" || key == "QuadVTOL1")
+            if (key != "UtilityHelo1" && key != "QuadVTOL1") return;
+            if (ResupplyMissionManager.IsUnitAssignedOrQueued(target, aircraft))
             {
-                float dist = Vector3.Distance(aircraft.transform.position, target.transform.position);
-                if (key == "UtilityHelo1" && dist > Plugin.ThresholdA.Value)
+                if (Plugin.Dbg)
+                    Plugin.Log.LogInfo($"[SB|P7] {aircraft.definition.unitName} rejected target {target.unitName}: another transport is already delivering to it.");
+                Reject(__instance);
+                return;
+            }
+            float dist = Vector3.Distance(aircraft.transform.position, target.transform.position);
+            float limit;
+            if (key == "UtilityHelo1")
+            {
+                limit = Plugin.ThresholdA.Value;
+            }
+            else
+            {
+                limit = Plugin.ThresholdB.Value;
+                if (Plugin.IsExtendedZoneTarget(target) && LaunchedFromShip(aircraft))
                 {
-                    if (Plugin.DebugLogging.Value)
-                        Plugin.Log.LogInfo($"[SupplyBuffetMod] Ibis rejected target {target.unitName} (Dist: {dist} > ThresholdA {Plugin.ThresholdA.Value})");
-                    TargetSearchResultsRef(__instance) = new CombatAI.TargetSearchResults();
-                    CurrentTargetRef(__instance) = null;
-                }
-                else if (key == "QuadVTOL1")
-                {
-                    float limit = Plugin.ThresholdB.Value;
-                    if (Plugin.IsExtendedZoneTarget(target))
-                    {
-                        limit *= 3f;
-                    }
-                    if (dist > limit)
-                    {
-                        if (Plugin.DebugLogging.Value)
-                            Plugin.Log.LogInfo($"[SupplyBuffetMod] Tarantula rejected target {target.unitName} (Dist: {dist} > ThresholdB {limit})");
-                        TargetSearchResultsRef(__instance) = new CombatAI.TargetSearchResults();
-                        CurrentTargetRef(__instance) = null;
-                    }
+                    limit *= 3f;
                 }
             }
+            if (dist > limit)
+            {
+                if (Plugin.Dbg)
+                    Plugin.Log.LogInfo($"[SB|P7] {aircraft.definition.unitName} rejected target {target.unitName} (Dist: {dist:F0} > limit {limit:F0}).");
+                Reject(__instance);
+                return;
+            }
+            ResupplyMissionManager.AssignTransport(target, aircraft);
+        }
+        private static bool LaunchedFromShip(Aircraft aircraft)
+        {
+            if (!ResupplyCensus.TryGetHomeBase(aircraft, out Airbase home)) return false;
+            return home.TryGetAttachedUnit(out Unit attached) && attached is Ship;
+        }
+        private static void Reject(AIHeloTransportState state)
+        {
+            TargetSearchResultsRef(state) = new CombatAI.TargetSearchResults();
+            CurrentTargetRef(state) = null;
         }
     }
 }

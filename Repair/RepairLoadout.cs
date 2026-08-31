@@ -1,3 +1,4 @@
+﻿
 using System.Collections.Generic;
 using NuclearOption.SavedMission;
 using UnityEngine;
@@ -10,8 +11,14 @@ namespace SupplyBuffetMod
         private static readonly string[] IbisEmptyStations = { "Cargo Bay (Front)", "Cargo Bay (Rear)" };
         private static readonly string[] TarantulaDozerStations = { "Cargo Bay (Front)", "Cargo Bay(Rear)" };
         private static readonly string[] TarantulaEmptyStations = { "Cargo Bay" };
-        public static Loadout Build(string jsonKey, WeaponManager manager)
+        public static Loadout Build(string jsonKey, WeaponManager manager, int sortieIndex)
         {
+            if (jsonKey == "Aryx_CargoPlane1")
+            {
+                Loadout chimera = ChimeraHelper.CreateRepairLoadout(sortieIndex, out string chimeraName);
+                Plugin.Log.LogInfo($"[SupplyBuffetMod] Chimera repair loadout: {chimeraName}.");
+                return chimera;
+            }
             var loadout = new Loadout { weapons = new List<WeaponMount>() };
             if (manager == null || manager.hardpointSets == null)
             {

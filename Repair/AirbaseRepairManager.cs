@@ -27,9 +27,9 @@ namespace SupplyBuffetMod
         {
             switch (kind)
             {
-                case RepairKind.Local:     return (Plugin.ActiveLocalRepairLimit != null) ? Plugin.ActiveLocalRepairLimit.Value : 1;
-                case RepairKind.Interbase: return (Plugin.ActiveInterbaseRepairLimit != null) ? Plugin.ActiveInterbaseRepairLimit.Value : 1;
-                default:                   return (Plugin.ActiveHeavyRepairLimit != null) ? Plugin.ActiveHeavyRepairLimit.Value : 1;
+                case RepairKind.Local:     return Plugin.Cfg(Plugin.ActiveLocalRepairLimit, 1);
+                case RepairKind.Interbase: return Plugin.Cfg(Plugin.ActiveInterbaseRepairLimit, 1);
+                default:                   return Plugin.Cfg(Plugin.ActiveHeavyRepairLimit, 1);
             }
         }
         private static int CountActiveRepairs(FactionHQ hq, RepairKind kind)
@@ -63,7 +63,14 @@ namespace SupplyBuffetMod
         private static readonly ConditionalWeakTable<Airbase, RepairState> _airbaseStates = new ConditionalWeakTable<Airbase, RepairState>();
         private static readonly Dictionary<FactionHQ, RepairState> _outpostStates = new Dictionary<FactionHQ, RepairState>();
         private static readonly List<RepairState> _pending = new List<RepairState>();
-        private static bool DebugOn => Plugin.DebugLogging != null && Plugin.DebugLogging.Value;
+        internal static void ResetForNewLevel()
+        {
+            AssignedRepairs.Clear();
+            _flightKinds.Clear();
+            _outpostStates.Clear();
+            _pending.Clear();
+        }
+        private static bool DebugOn => Plugin.Dbg;
         public static bool IsValidRepairTarget(Unit unit)
         {
             return unit != null && unit is IRepairable repairable && repairable.NeedsRepair();
@@ -434,7 +441,7 @@ namespace SupplyBuffetMod
             var spawnDef = GetAircraftDefinition(jsonKey);
             if (spawnDef == null) return false;
             var manager = PrefabWeaponManager(spawnDef);
-            Loadout loadout = RepairLoadout.Build(jsonKey, manager);
+            Loadout loadout = RepairLoadout.Build(jsonKey, manager, SortieParity.Next(hq, SortieCategory.Repair));
             hq.AddSupplyUnit(spawnDef, 1);
             ResupplyCensus.RegisterDispatch(hq, jsonKey, isWet);
             MarkPending(state, hq, target, jsonKey, kind);

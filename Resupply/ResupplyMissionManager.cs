@@ -1,15 +1,37 @@
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using UnityEngine;
 namespace SupplyBuffetMod
 {
     public static class ResupplyMissionManager
     {
-        public static Dictionary<Unit, Aircraft> AssignedChimeras = new Dictionary<Unit, Aircraft>();
+        public static Dictionary<Unit, Aircraft> AssignedTransports = new Dictionary<Unit, Aircraft>();
+        internal static void ResetForNewLevel()
+        {
+            AssignedTransports.Clear();
+        }
         private static readonly List<Unit> PruneScratch = new List<Unit>();
+        private static readonly ConditionalWeakTable<Unit, StrongBox<float>> CoveredSince =
+            new ConditionalWeakTable<Unit, StrongBox<float>>();
+        private static bool CoveredByExistingRearmer(RearmMissionController controller, Unit unit)
+        {
+            if (controller == null || unit == null) return false;
+            if (!controller.TryGetRearmer(unit, out _))
+            {
+                CoveredSince.Remove(unit);
+                return false;
+            }
+            float now = Time.timeSinceLevelLoad;
+            StrongBox<float> since = CoveredSince.GetValue(unit, _ => new StrongBox<float>(now));
+            float grace = Plugin.Cfg(Plugin.ClusterCoverageGrace, 90f);
+            if (grace > 0f && now - since.Value >= grace) return false;
+            return true;
+        }
         public static bool IsUnitAssignedOrQueued(Unit unit, Aircraft ignoreAircraft = null)
         {
             if (unit == null || unit.disabled) return false;
             if (ChimeraSpawnQueue.Contains(unit)) return true;
-            if (AssignedChimeras.TryGetValue(unit, out Aircraft assigned))
+            if (AssignedTransports.TryGetValue(unit, out Aircraft assigned))
             {
                 if (assigned != null && !assigned.disabled && assigned != ignoreAircraft)
                 {
@@ -21,23 +43,23 @@ namespace SupplyBuffetMod
         public static bool IsAssignedToResupply(Aircraft aircraft)
         {
             if (aircraft == null) return false;
-            foreach (var kvp in AssignedChimeras)
+            foreach (var kvp in AssignedTransports)
             {
                 if (kvp.Value == aircraft) return true;
             }
             return false;
         }
-        public static void AssignChimera(Unit target, Aircraft chimera)
+        public static void AssignTransport(Unit target, Aircraft transport)
         {
-            if (target == null || chimera == null) return;
-            AssignedChimeras[target] = chimera;
+            if (target == null || transport == null) return;
+            AssignedTransports[target] = transport;
         }
-        public static void UnassignChimera(Unit target)
+        public static void UnassignTransport(Unit target)
         {
             if (target == null) return;
-            AssignedChimeras.Remove(target);
+            AssignedTransports.Remove(target);
         }
-        public static bool TryGetUnassignedUnitNeedingRearm(RearmMissionController controller, bool ships, bool vehicles, Aircraft requestingAircraft, out Unit target)
+        public static bool TryGetUnassignedUnitNeedingRearm(RearmMissionController controller, bool ships, bool vehicles, Aircraft requestingAircraft, out Unit target, SortieCategory? requiredDryCategory = null, GlobalPosition? homeBase = null, float minRangeFromHome = 0f)
         {
             target = null;
             if (controller == null || controller.UnitsNeedingRearm == null) return false;
@@ -45,11 +67,12 @@ namespace SupplyBuffetMod
             for (int i = controller.UnitsNeedingRearm.Count - 1; i >= 0; i--)
             {
                 Unit unit = controller.UnitsNeedingRearm[i];
-                if (unit == null || unit.disabled || unit.radarAlt > 10f)
+                if (unit == null || unit.disabled)
                 {
                     controller.UnitsNeedingRearm.RemoveAt(i);
                     continue;
                 }
+                if (unit.radarAlt > 10f) continue;
                 if (unit is Aircraft)
                 {
                     continue;
@@ -61,8 +84,33 @@ namespace SupplyBuffetMod
                     {
                         continue;
                     }
-                    if (ResupplyDispatcher.IsRecentlyServed(unit))
+                    if (CoveredByExistingRearmer(controller, unit))
                     {
+                        continue;
+                    }
+                    bool blocked = (requestingAircraft != null)
+                        ? ResupplyDispatcher.IsRecentlyServed(unit)
+                        : ResupplyDispatcher.IsOnCooldown(unit);
+                    if (blocked)
+                    {
+                        continue;
+                    }
+                    if (requiredDryCategory.HasValue && !isNaval
+                        && ChimeraHelper.DryCategoryFor(unit) != requiredDryCategory.Value)
+                    {
+                        if (Plugin.Dbg)
+                        {
+                            Plugin.Log.LogInfo($"[SB|P8] {unit.unitName} skipped: needs {ChimeraHelper.DryCategoryFor(unit)} loadout, transport carries {requiredDryCategory.Value}.");
+                        }
+                        continue;
+                    }
+                    if (homeBase.HasValue && minRangeFromHome > 0f && !isNaval
+                        && FastMath.Distance(unit.GlobalPosition(), homeBase.Value) < minRangeFromHome)
+                    {
+                        if (Plugin.Dbg)
+                        {
+                            Plugin.Log.LogInfo($"[SB|P8] {unit.unitName} skipped: {FastMath.Distance(unit.GlobalPosition(), homeBase.Value):F0}m from the transport's base, inside the {minRangeFromHome:F0}m minimum.");
+                        }
                         continue;
                     }
                     float missing = unit.GetAmmoValue().Missing;
@@ -72,6 +120,10 @@ namespace SupplyBuffetMod
                         maxMissing = missing;
                     }
                 }
+            }
+            if (target != null && Plugin.Dbg)
+            {
+                Plugin.Log.LogInfo($"[SB|P3] ResupplyMissionManager picked needy unit: {target.unitName} (Missing ammo fraction: {maxMissing:F2})");
             }
             return target != null;
         }
@@ -86,7 +138,9 @@ namespace SupplyBuffetMod
                 Unit unit = rearmer.Unit;
                 if (!ChimeraHelper.IsDrivingToRestock(unit)) continue;
                 if (IsUnitAssignedOrQueued(unit, requestingAircraft)) continue;
-                if (ResupplyDispatcher.IsRecentlyServed(unit)) continue;
+                if ((requestingAircraft != null)
+                    ? ResupplyDispatcher.IsRecentlyServed(unit)
+                    : ResupplyDispatcher.IsOnCooldown(unit)) continue;
                 target = unit;
                 return true;
             }
@@ -95,10 +149,10 @@ namespace SupplyBuffetMod
         public static void Update()
         {
             PruneScratch.Clear();
-            foreach (var kvp in AssignedChimeras)
+            foreach (var kvp in AssignedTransports)
             {
-                Aircraft chimera = kvp.Value;
-                if (kvp.Key == null || kvp.Key.disabled || chimera == null || chimera.disabled)
+                Aircraft transport = kvp.Value;
+                if (kvp.Key == null || kvp.Key.disabled || transport == null || transport.disabled)
                 {
                     PruneScratch.Add(kvp.Key);
                 }
@@ -108,9 +162,9 @@ namespace SupplyBuffetMod
                 Unit unit = PruneScratch[i];
                 if (unit != null && !unit.disabled)
                 {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] Assigned Chimera for '{unit.unitName}' was destroyed or disabled! Removing assignment.");
+                    Plugin.Log.LogInfo($"[SupplyBuffetMod] Assigned transport for '{unit.unitName}' was destroyed or disabled! Removing assignment.");
                 }
-                AssignedChimeras.Remove(unit);
+                AssignedTransports.Remove(unit);
             }
             PruneScratch.Clear();
         }

@@ -13,6 +13,10 @@ namespace SupplyBuffetMod
             public Unit LastCommandedTarget;
         }
         private static readonly List<DozerAssignment> Assignments = new List<DozerAssignment>();
+        internal static void ResetForNewLevel()
+        {
+            Assignments.Clear();
+        }
         private static readonly AccessTools.FieldRef<GroundVehicle, bool> NavigateToObjectivesRef =
             AccessTools.FieldRefAccess<GroundVehicle, bool>("navigateToObjectives");
         private static readonly AccessTools.FieldRef<Repairer, Unit> UnitToRepairRef =
@@ -54,7 +58,7 @@ namespace SupplyBuffetMod
                 if (target == null || target == assignment.LastCommandedTarget) continue;
                 assignment.LastCommandedTarget = target;
                 assignment.Vehicle.UnitCommand.SetDestination(target.GlobalPosition(), playerCommand: false);
-                if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+                if (Plugin.Dbg)
                 {
                     float dist = Vector3.Distance(assignment.Vehicle.transform.position, target.transform.position);
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] Repair vehicle '{assignment.Vehicle.unitName}' heading to '{target.unitName}' ({dist:F0}m) at {assignment.HomeAirbase.gameObject.name}.");

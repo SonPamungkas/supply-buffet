@@ -1,3 +1,4 @@
+﻿
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -56,9 +57,9 @@ namespace SupplyBuffetMod
                 if (TrySpawnAircraftAtBase(hq, requester, "QuadVTOL1", isWet, tarantulaBase, distTarantula)) return true;
             }
             if (distIbis < thresholdA && ibisBase != null && ibisLimit)
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] Ibis limit reached, skipping for '{requester.unitName}'.");
+                Plugin.Log.LogInfo($"[SB|P5] Ibis limit reached, skipping for '{requester.unitName}'.");
             if (distTarantula < thresholdB && tarantulaBase != null && tarantulaLimit)
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] Tarantula limit reached, skipping for '{requester.unitName}'.");
+                Plugin.Log.LogInfo($"[SB|P5] Tarantula limit reached, skipping for '{requester.unitName}'.");
             bool use3xFallback = false;
             if (tarantulaBase != null)
             {
@@ -68,16 +69,21 @@ namespace SupplyBuffetMod
             if (use3xFallback)
             {
                 if (Plugin.IsResupplyLimitReached(hq, "QuadVTOL1", isWet, false)) return false;
-                Plugin.Log.LogInfo($"[SupplyBuffetMod] 3x fallback: Tarantula ({distTarantula:F0}m) vs Chimera ({(chimeraBase != null ? distChimera.ToString("F0") : "N/A")}m). Spawning Tarantula for '{requester.unitName}'.");
+                Plugin.Log.LogInfo($"[SB|P5] 3x fallback: Tarantula ({distTarantula:F0}m) vs Chimera ({(chimeraBase != null ? distChimera.ToString("F0") : "N/A")}m). Spawning Tarantula for '{requester.unitName}'.");
                 Plugin.MarkExtendedZoneTarget(requester);
                 return TrySpawnAircraftAtBase(hq, requester, "QuadVTOL1", isWet, tarantulaBase, distTarantula);
             }
             if (chimeraBase != null)
             {
+                if (!isWet && distChimera < thresholdB)
+                {
+                    Plugin.Log.LogInfo($"[SB|P5] '{requester.unitName}' is {distChimera:F0}m from the nearest Chimera base, inside ThresholdB ({thresholdB:F0}m) - too short for a Chimera run; leaving it to the helos.");
+                    return false;
+                }
                 if (Plugin.IsResupplyLimitReached(hq, "Aryx_CargoPlane1", isWet, true)) return false;
                 return EnqueueChimeraRequest(hq, requester, isWet, distChimera);
             }
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] No valid resupply base found for '{requester.unitName}'. Skipping.");
+            Plugin.Log.LogInfo($"[SB|P5] No valid resupply base found for '{requester.unitName}'. Skipping.");
             return false;
         }
         private static float GetClosestSpawnBaseDistance(
@@ -89,16 +95,40 @@ namespace SupplyBuffetMod
             if (FactionRegistry.airbaseLookup == null) return minDist;
             AircraftDefinition spawnDef = GetDefinition(jsonKey);
             if (spawnDef == null) return minDist;
+            List<string> refused = null;
             foreach (var ab in FactionRegistry.airbaseLookup.Values)
             {
                 if (ab == null || !ab.isActiveAndEnabled) continue;
-                if (ab.CurrentHQ != hq && (ab.CurrentHQ == null || ab.CurrentHQ.faction != hq.faction)) continue;
-                if (wetOnly && !IsWetSpawnBase(ab)) continue;
-                if (!ab.CanSpawnAircraft(spawnDef)) continue;
+                if (ab.CurrentHQ != hq && (ab.CurrentHQ == null || ab.CurrentHQ.faction != hq.faction))
+                {
+                    Refuse(ref refused, ab, "wrong faction");
+                    continue;
+                }
+                if (wetOnly && !IsWetSpawnBase(ab))
+                {
+                    Refuse(ref refused, ab, "not a wet spawn base (name has no Helipad/SupplyShip/Atlas)");
+                    continue;
+                }
+                if (!ab.CanSpawnAircraft(spawnDef))
+                {
+                    Refuse(ref refused, ab, $"CanSpawnAircraft refused {jsonKey}");
+                    continue;
+                }
                 float d = Vector3.Distance(ab.transform.position, requester.transform.position);
                 if (d < minDist) { minDist = d; closestBase = ab; }
             }
+            if (closestBase == null && refused != null)
+            {
+                Plugin.Log.LogInfo($"[SB|P7] No spawn base for {jsonKey} (wetOnly={wetOnly}): {string.Join("; ", refused)}");
+            }
             return minDist;
+        }
+        private static void Refuse(ref List<string> refused, Airbase ab, string why)
+        {
+            if (refused == null) refused = new List<string>();
+            if (refused.Count >= 12) return;
+            string name = (ab != null && ab.gameObject != null) ? ab.gameObject.name : "<null>";
+            refused.Add($"{name} - {why}");
         }
         private static bool IsWetSpawnBase(Airbase ab)
         {
@@ -116,9 +146,9 @@ namespace SupplyBuffetMod
             if (spawnDef == null || spawnBase == null) return false;
             if (!ResupplyCensus.CanSpawnNow(hq))
             {
-                if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+                if (Plugin.Dbg)
                 {
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] Spawn interval active for '{requester.unitName}' ({ResupplyCensus.SpawnIntervalRemaining(hq):F0}s left); deferring {spawnDef.unitName}.");
+                    Plugin.Log.LogInfo($"[SB|P6] Spawn interval active for '{requester.unitName}' ({ResupplyCensus.SpawnIntervalRemaining(hq):F0}s left); deferring {spawnDef.unitName}.");
                 }
                 return false;
             }
@@ -134,7 +164,7 @@ namespace SupplyBuffetMod
                 return false;
             }
             hq.AddSupplyUnit(spawnDef, 1);
-            ResupplyCensus.RegisterDispatch(hq, jsonKey, isWet);
+            ResupplyCensus.RegisterDispatch(hq, jsonKey, isWet, spawnBase);
             int livery = spawnDef.aircraftParameters.GetRandomLiveryForFaction(hq.faction);
             var result = spawnBase.TrySpawnAircraft(null, spawnDef, new LiveryKey(livery), bestLoadout.loadout, bestLoadout.FuelRatio);
             if (!result.Allowed)
@@ -145,7 +175,7 @@ namespace SupplyBuffetMod
                 return false;
             }
             ResupplyCensus.MarkSpawned(hq);
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] Spawned {spawnDef.unitName} ({bestLoadout.Name}) at {spawnBase.gameObject.name} for {(isWet ? "ship" : "ground")} '{requester.unitName}'. Dist: {dist:F0}m.");
+            Plugin.Log.LogInfo($"[SB|P6] Spawned {spawnDef.unitName} ({bestLoadout.Name}) at {spawnBase.gameObject.name} for {(isWet ? "ship" : "ground")} '{requester.unitName}'. Dist: {dist:F0}m.");
             return true;
         }
         private static bool EnqueueChimeraRequest(FactionHQ hq, Unit requester, bool isWet, float dist)
@@ -156,8 +186,9 @@ namespace SupplyBuffetMod
                 Plugin.Log.LogWarning("[SupplyBuffetMod] Chimera definition (Aryx_CargoPlane1) not found.");
                 return false;
             }
-            Loadout loadout = ChimeraHelper.CreateDynamicLoadout(requester, isWet, out string loadoutName, out string _);
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] Requesting {(isWet ? "Wet" : "Dry")} Chimera for '{requester.unitName}' (Loadout: {loadoutName}, Dist: {dist:F0}m).");
+            int sortieIndex = isWet ? 0 : SortieParity.Next(hq, ChimeraHelper.DryCategoryFor(requester));
+            Loadout loadout = ChimeraHelper.CreateDynamicLoadout(requester, isWet, sortieIndex, out string loadoutName, out string _);
+            Plugin.Log.LogInfo($"[SB|P5] Requesting {(isWet ? "Wet" : "Dry")} Chimera for '{requester.unitName}' (Loadout: {loadoutName}, Dist: {dist:F0}m).");
             return ChimeraSpawnQueue.Request(hq, requester, chimeraDef, loadout, loadoutName, isWet);
         }
         private static StandardLoadout GetBestStandardLoadout(AircraftDefinition def, bool isWet, string preferredMountKey = null)

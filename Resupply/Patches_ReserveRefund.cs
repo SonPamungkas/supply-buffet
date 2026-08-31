@@ -26,7 +26,7 @@ namespace SupplyBuffetMod
         {
             if (__state == null || __state.HQ == null || __state.Definition == null) return;
             __state.HQ.AddSupplyUnit(__state.Definition, -1);
-            if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+            if (Plugin.Dbg)
             {
                 string name = (__instance != null) ? __instance.unitName : __state.Definition.unitName;
                 Plugin.Log.LogInfo($"[SupplyBuffetMod] '{name}' recovered; cancelled the {__state.Definition.unitName} reserve refund so the sortie nets zero.");

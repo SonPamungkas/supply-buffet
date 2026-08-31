@@ -23,6 +23,11 @@ namespace SupplyBuffetMod
         private static readonly Dictionary<Hangar, float> Reserved = new Dictionary<Hangar, float>();
         private const float RESERVE_SECONDS = 5f;
         private const float RETRY_SECONDS = 1f;
+        internal static void ResetForNewLevel()
+        {
+            Pending.Clear();
+            Reserved.Clear();
+        }
         private const float REQUEST_TTL = 120f;
         private static readonly List<Hangar> ExpiredScratch = new List<Hangar>();
         public static bool IsServerAuthority()
@@ -50,7 +55,7 @@ namespace SupplyBuffetMod
             if (TryDispatch(req, now)) return true;
             req.NextAttempt = now + RETRY_SECONDS;
             Pending.Enqueue(req);
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] Queued {(isWet ? "Wet" : "Dry")} Chimera for '{requester.unitName}' (Loadout: {loadoutName}) - no free hangar yet.");
+            Plugin.Log.LogInfo($"[SB|P6] Queued {(isWet ? "Wet" : "Dry")} Chimera for '{requester.unitName}' (Loadout: {loadoutName}) - no free hangar yet.");
             return true;
         }
         public static void Drain()
@@ -122,7 +127,7 @@ namespace SupplyBuffetMod
                 if (!req.LoggedWait)
                 {
                     req.LoggedWait = true;
-                    Plugin.Log.LogInfo($"[SupplyBuffetMod] Spawn interval active ({ResupplyCensus.SpawnIntervalRemaining(req.HQ):F0}s left), holding request for '{req.Requester.unitName}'.");
+                    Plugin.Log.LogInfo($"[SB|P6] Spawn interval active ({ResupplyCensus.SpawnIntervalRemaining(req.HQ):F0}s left), holding request for '{req.Requester.unitName}'.");
                 }
                 return false;
             }
@@ -152,7 +157,7 @@ namespace SupplyBuffetMod
                 }
                 return false;
             }
-            ResupplyCensus.RegisterDispatch(req.HQ, req.ChimeraDef.jsonKey, req.IsWet);
+            ResupplyCensus.RegisterDispatch(req.HQ, req.ChimeraDef.jsonKey, req.IsWet, spawnBase);
             try
             {
                 int livery = req.ChimeraDef.aircraftParameters.GetRandomLiveryForFaction(req.HQ.faction);
@@ -174,7 +179,7 @@ namespace SupplyBuffetMod
             }
             Reserved[chosenHangar] = now + RESERVE_SECONDS;
             ResupplyCensus.MarkSpawned(req.HQ);
-            Plugin.Log.LogInfo($"[SupplyBuffetMod] Spawned {req.ChimeraDef.unitName} ({req.LoadoutName}) at {spawnBase.gameObject.name} (Hangar: {chosenHangar.name}) for {req.Requester.unitName}.");
+            Plugin.Log.LogInfo($"[SB|P6] Spawned {req.ChimeraDef.unitName} ({req.LoadoutName}) at {spawnBase.gameObject.name} (Hangar: {chosenHangar.name}) for {req.Requester.unitName}.");
             return true;
         }
         private static bool IsFree(Hangar h, AircraftDefinition def, float now)

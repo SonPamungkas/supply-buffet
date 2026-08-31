@@ -247,7 +247,7 @@ namespace SupplyBuffetMod
                 controlInputs.pitch = 0f;
                 controlInputs.yaw = 0f;
                 controlInputs.roll = 0f;
-                if (touchedDownTime == 0f && Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+                if (touchedDownTime == 0f && Plugin.Dbg)
                 {
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} touched down: radarAlt={aircraft.radarAlt:F1}m, sink={sinkRate:F1}m/s, speed={aircraft.speed:F1}m/s.");
                 }
@@ -262,17 +262,11 @@ namespace SupplyBuffetMod
         }
         private void UpdateGear(bool wantGear)
         {
-            LandingGear.GearState gearState = aircraft.gearState;
-            if (gearState == LandingGear.GearState.Extending || gearState == LandingGear.GearState.Retracting) return;
-            LandingGear.GearState settled = wantGear
-                ? LandingGear.GearState.LockedExtended
-                : LandingGear.GearState.LockedRetracted;
-            if (gearState == settled) return;
-            aircraft.SetGear(wantGear);
+            TransportGear.Apply(aircraft, wantGear);
             if (wantGear && !gearCommandLogged)
             {
                 gearCommandLogged = true;
-                if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+                if (Plugin.Dbg)
                 {
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} lowering gear for the repair landing.");
                 }

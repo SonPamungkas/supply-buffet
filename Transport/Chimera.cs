@@ -1,3 +1,4 @@
+﻿
 using HarmonyLib;
 using System;
 using System.Collections.Generic;
@@ -11,7 +12,7 @@ namespace SupplyBuffetMod
     {
         static void Postfix(Hangar __instance, AircraftDefinition definition, ref bool __result)
         {
-            if (definition != null && definition.jsonKey == "Aryx_CargoPlane1")
+            if (definition != null && definition.jsonKey == ChimeraHelper.ChimeraKey)
             {
                 if (__instance.gameObject != null &&
                     __instance.gameObject.name.IndexOf("hangar_med", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -53,6 +54,7 @@ namespace SupplyBuffetMod
             _weaponMountCache.TryGetValue(key, out WeaponMount result);
             return result;
         }
+        public const string ChimeraKey = "Aryx_CargoPlane1";
         public const string RearCargoBay  = "Cargo Bay Rear";   
         public const string FrontCargoBay = "Cargo Bay Front";  
         public const string MissionBay    = "Mission Bay";      
@@ -61,6 +63,9 @@ namespace SupplyBuffetMod
         public const string DryContainerMount = "MunitionsContainerx1";
         public const string DryPalletMount    = "MunitionsSmallPallet2x4";
         public const string DryTruckMount     = "Aryx_MC260_HLT-M";
+        public const string Dry50TContainerMount = "Aryx_MC260_MunitionsContainer_50T_x1";
+        public const string HeavyCEVMount        = "Aryx_HeavyCEV_x1";
+        public const string JackknifePairMount   = "Aryx_MC260_UGVDozer_2x";
         public const string JammerMount       = "JammingPod1";
         public static bool IsDrivingToRestock(Unit unit)
         {
@@ -68,33 +73,50 @@ namespace SupplyBuffetMod
                 && gv.TryGetComponent<RearmVehicleAI>(out RearmVehicleAI ai)
                 && ai.GetStateName() == "Driving to Restock";
         }
-        public static string SelectDryMount(Unit target)
+        public static SortieCategory DryCategoryFor(Unit target)
+        {
+            if (target is GroundVehicle vehicle && !vehicle.GetHoldPosition()) return SortieCategory.DryMoving;
+            return SortieCategory.DryStatic;
+        }
+        public static string SelectDryMount(Unit target, int sortieIndex)
         {
             if (IsDrivingToRestock(target)) return DryContainerMount;
-            if (target is GroundVehicle vehicle)
+            bool first = SortieParity.IsFirstOfPair(sortieIndex);
+            if (DryCategoryFor(target) == SortieCategory.DryMoving)
             {
-                return vehicle.GetHoldPosition() ? DryTruckMount : DryPalletMount;
+                return first ? DryContainerMount : DryPalletMount;
             }
-            return DryContainerMount;
+            return first ? DryTruckMount : Dry50TContainerMount;
         }
-        public static Loadout CreateDynamicLoadout(Unit target, bool isWet, out string loadoutName, out string cargoMountKey)
+        public static Loadout CreateDynamicLoadout(Unit target, bool isWet, int sortieIndex, out string loadoutName, out string cargoMountKey)
         {
             var byStation = new Dictionary<string, WeaponMount>(StringComparer.Ordinal);
             if (isWet)
             {
                 loadoutName = "Naval Supply Double";
                 cargoMountKey = WetContainerMount;
-                WeaponMount wetMount = ResolveSupplyMount(WetContainerMount);
+                WeaponMount wetMount = ResolveSupplyMount(WetContainerMount, isWet: true);
                 byStation[RearCargoBay]  = wetMount;
                 byStation[FrontCargoBay] = wetMount;
             }
             else
             {
-                cargoMountKey = SelectDryMount(target);
-                WeaponMount dryMount = ResolveSupplyMount(cargoMountKey);
+                cargoMountKey = SelectDryMount(target, sortieIndex);
+                WeaponMount dryMount = ResolveSupplyMount(cargoMountKey, isWet: false);
+                if (dryMount == null && cargoMountKey != DryContainerMount)
+                {
+                    Plugin.Log.LogWarning($"[SupplyBuffetMod] Dry mount '{cargoMountKey}' unavailable; falling back to '{DryContainerMount}'.");
+                    cargoMountKey = DryContainerMount;
+                    dryMount = ResolveSupplyMount(cargoMountKey, isWet: false);
+                }
                 if (cargoMountKey == DryTruckMount)
                 {
                     loadoutName = "Munition Truck";
+                    byStation[MissionBay] = dryMount;   
+                }
+                else if (cargoMountKey == Dry50TContainerMount)
+                {
+                    loadoutName = "Munitions Container 50T";
                     byStation[MissionBay] = dryMount;   
                 }
                 else if (cargoMountKey == DryPalletMount)
@@ -114,7 +136,7 @@ namespace SupplyBuffetMod
             if (jammer != null) byStation[WingPylons] = jammer;
             return BuildLoadout(byStation);
         }
-        private static WeaponMount ResolveSupplyMount(string key)
+        private static WeaponMount ResolveSupplyMount(string key, bool isWet)
         {
             WeaponMount mount = GetWeaponMount(key);
             if (mount == null)
@@ -124,10 +146,39 @@ namespace SupplyBuffetMod
             }
             if (mount.info != null)
             {
-                mount.info.rearmGround = true;
-                mount.info.rearmShip   = true;
+                mount.info.rearmShip   = isWet;
+                mount.info.rearmGround = !isWet;
             }
             return mount;
+        }
+        public static Loadout CreateRepairLoadout(int sortieIndex, out string loadoutName)
+        {
+            var byStation = new Dictionary<string, WeaponMount>(StringComparer.Ordinal);
+            if (SortieParity.IsFirstOfPair(sortieIndex))
+            {
+                loadoutName = "Heavy CEV";
+                WeaponMount cev = GetWeaponMount(HeavyCEVMount);
+                if (cev != null) byStation[MissionBay] = cev;
+                else Plugin.Log.LogWarning($"[SupplyBuffetMod] Repair mount '{HeavyCEVMount}' not found; this sortie carries nothing.");
+            }
+            else
+            {
+                loadoutName = "Jackknife Quad";
+                WeaponMount pair = GetWeaponMount(JackknifePairMount);
+                if (pair == null)
+                {
+                    pair = GetWeaponMount(RepairLoadout.DozerMount);
+                    Plugin.Log.LogWarning($"[SupplyBuffetMod] Repair mount '{JackknifePairMount}' not found; falling back to '{RepairLoadout.DozerMount}'.");
+                }
+                if (pair != null)
+                {
+                    byStation[RearCargoBay]  = pair;
+                    byStation[FrontCargoBay] = pair;
+                }
+            }
+            WeaponMount jammer = GetWeaponMount(JammerMount);
+            if (jammer != null) byStation[WingPylons] = jammer;
+            return BuildLoadout(byStation);
         }
         private static Loadout BuildLoadout(Dictionary<string, WeaponMount> byStation)
         {

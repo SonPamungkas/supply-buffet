@@ -42,7 +42,7 @@ namespace SupplyBuffetMod
                     __instance.Unit.RpcUpdateRearmerCapacity(0f);
                     if (SingleUseRef(__instance)) __instance.Unit.Networkdisabled = true;
                 }
-                if (Plugin.DebugLogging != null && Plugin.DebugLogging.Value)
+                if (Plugin.Dbg)
                 {
                     Plugin.Log.LogInfo($"[SupplyBuffetMod] Full restore: '{__instance.gameObject.name}' fully rearmed '{unitToRearm.unitName}' and was consumed.");
                 }

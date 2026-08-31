@@ -11,20 +11,29 @@ namespace SupplyBuffetMod
             public string JsonKey;
             public bool IsWet;
             public float Expiry;
+            public Airbase Base;
         }
         private const float MATERIALISE_TTL = 30f;
         private static readonly List<InFlightSpawn> Dispatched = new List<InFlightSpawn>();
         private static readonly ConditionalWeakTable<Aircraft, StrongBox<bool>> WetTag =
             new ConditionalWeakTable<Aircraft, StrongBox<bool>>();
+        private static readonly ConditionalWeakTable<Aircraft, StrongBox<Airbase>> HomeBase =
+            new ConditionalWeakTable<Aircraft, StrongBox<Airbase>>();
         private static readonly Dictionary<Faction, float> LastSpawnPerFaction =
             new Dictionary<Faction, float>();
+        internal static void ResetForNewLevel()
+        {
+            Dispatched.Clear();
+            LastSpawnPerFaction.Clear();
+        }
         public static bool CanSpawnNow(FactionHQ hq)
         {
             if (hq == null || hq.faction == null) return true;
-            float interval = Plugin.SpawnInterval != null ? Plugin.SpawnInterval.Value : 0f;
+            float interval = Plugin.Cfg(Plugin.SpawnInterval, 60f);
             if (interval <= 0f) return true;
-            return !LastSpawnPerFaction.TryGetValue(hq.faction, out float last)
-                || Time.timeSinceLevelLoad - last >= interval;
+            if (!LastSpawnPerFaction.TryGetValue(hq.faction, out float last)) return true;
+            if (Time.timeSinceLevelLoad - last >= interval) return true;
+            return Plugin.NoResupplyTransportAirborne(hq);
         }
         public static float SpawnIntervalRemaining(FactionHQ hq)
         {
@@ -38,7 +47,7 @@ namespace SupplyBuffetMod
             if (hq == null || hq.faction == null) return;
             LastSpawnPerFaction[hq.faction] = Time.timeSinceLevelLoad;
         }
-        public static void RegisterDispatch(FactionHQ hq, string jsonKey, bool isWet)
+        public static void RegisterDispatch(FactionHQ hq, string jsonKey, bool isWet, Airbase spawnBase = null)
         {
             if (hq == null || string.IsNullOrEmpty(jsonKey)) return;
             float now = Time.timeSinceLevelLoad;
@@ -48,6 +57,7 @@ namespace SupplyBuffetMod
                 HQ = hq,
                 JsonKey = jsonKey,
                 IsWet = isWet,
+                Base = spawnBase,
                 Expiry = now + MATERIALISE_TTL
             });
         }
@@ -63,6 +73,16 @@ namespace SupplyBuffetMod
                     return;
                 }
             }
+        }
+        public static bool AnyDispatchPending(FactionHQ hq)
+        {
+            if (hq == null || Dispatched.Count == 0) return false;
+            PruneExpired(Time.timeSinceLevelLoad);
+            for (int i = 0; i < Dispatched.Count; i++)
+            {
+                if (SameFaction(Dispatched[i].HQ, hq)) return true;
+            }
+            return false;
         }
         public static int CountInFlight(FactionHQ hq, string jsonKey, bool isWet)
         {
@@ -87,6 +107,7 @@ namespace SupplyBuffetMod
                 InFlightSpawn entry = Dispatched[i];
                 if (entry.JsonKey != jsonKey || !SameFaction(entry.HQ, hq)) continue;
                 WetTag.GetOrCreateValue(aircraft).Value = entry.IsWet;
+                if (entry.Base != null) HomeBase.GetOrCreateValue(aircraft).Value = entry.Base;
                 Dispatched.RemoveAt(i);
                 return;
             }
@@ -94,6 +115,16 @@ namespace SupplyBuffetMod
         public static bool WasDispatchedByMod(Aircraft aircraft)
         {
             return aircraft != null && WetTag.TryGetValue(aircraft, out _);
+        }
+        public static bool TryGetHomeBase(Aircraft aircraft, out Airbase home)
+        {
+            if (aircraft != null && HomeBase.TryGetValue(aircraft, out StrongBox<Airbase> tag) && tag.Value != null)
+            {
+                home = tag.Value;
+                return true;
+            }
+            home = null;
+            return false;
         }
         public static bool TryGetIsWet(Aircraft aircraft, out bool isWet)
         {

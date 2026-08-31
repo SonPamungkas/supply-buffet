@@ -66,6 +66,18 @@ namespace SupplyBuffetMod
                     : string.Empty;
                 Plugin.Log.LogInfo($"[SupplyBuffetMod] {aircraft.unitName} has delivered its cargo; returning to base instead of taking a combat target{note}.");
             }
+            if (Plugin.Dbg && aircraft.NetworkHQ != null
+                && aircraft.NetworkHQ.TryGetNearestAirbase(aircraft.transform.position, out Airbase pad)
+                && pad != null
+                && pad.TryRequestVerticalLanding(aircraft, default(RunwayQuery), out Airbase.VerticalLandingPoint lp)
+                && lp != null)
+            {
+                bool occupied = lp.IsOccupied(aircraft);
+                Aircraft head = null;
+                var q = lp.GetLandingQueue();
+                if (q != null && q.Count > 0) head = q.Peek();
+                Plugin.Log.LogInfo($"[SB|H1] {aircraft.unitName} RTB to {pad.gameObject.name}: landingPoint occupied={occupied}, queueHead={(head != null ? head.unitName : "none")}, self={aircraft.unitName}.");
+            }
             pilot.SwitchState(pilot.AIHeloLandingState);
             return false;
         }

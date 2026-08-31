@@ -20,6 +20,15 @@
     <Reference Include="Mirage">
       <HintPath>..\..\COMPILER_HERE\game\Mirage.dll</HintPath>
     </Reference>
+    <!-- The rearmer readout panel we reuse for transport info is built from TMP_Text. -->
+    <Reference Include="UnityEngine.UI">
+      <HintPath>..\..\COMPILER_HERE\game\UnityEngine.UI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>..\..\COMPILER_HERE\game\Unity.TextMeshPro.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

@@ -11,18 +11,7 @@ namespace SupplyBuffetMod
             if (!Plugin.ExpressRearmEnabled.Value || ship == null) return;
             try
             {
-                float level = Plugin.RearmRequestSensitivity.Value;
-                if (ship.weaponStations == null) return;
-                foreach (var ws in ship.weaponStations)
-                {
-                    if (ws == null || ws.Weapons == null) continue;
-                    foreach (var w in ws.Weapons)
-                    {
-                        if (w == null) continue;
-                        w.Rearmable = true;
-                        w.RequestRearmLevel = level;
-                    }
-                }
+                RearmStampHelper.StampWeapons(ship);
             }
             catch (Exception ex)
             {
@@ -55,18 +44,7 @@ namespace SupplyBuffetMod
             if (!Plugin.ExpressRearmGroundEnabled.Value || unit == null) return;
             try
             {
-                float level = Plugin.RearmRequestSensitivity.Value;
-                if (unit.weaponStations == null) return;
-                foreach (var ws in unit.weaponStations)
-                {
-                    if (ws == null || ws.Weapons == null) continue;
-                    foreach (var w in ws.Weapons)
-                    {
-                        if (w == null) continue;
-                        w.Rearmable = true;
-                        w.RequestRearmLevel = level;
-                    }
-                }
+                RearmStampHelper.StampWeapons(unit);
             }
             catch (Exception ex)
             {
@@ -78,6 +56,21 @@ namespace SupplyBuffetMod
     {
         private static readonly ConditionalWeakTable<Unit, StrongBox<float>> LastStamp =
             new ConditionalWeakTable<Unit, StrongBox<float>>();
+        public static void StampWeapons(Unit unit)
+        {
+            if (unit == null || unit.weaponStations == null) return;
+            float level = Plugin.Cfg(Plugin.RearmRequestSensitivity, 0.5f);
+            foreach (var ws in unit.weaponStations)
+            {
+                if (ws == null || ws.Weapons == null) continue;
+                foreach (var w in ws.Weapons)
+                {
+                    if (w == null) continue;
+                    w.Rearmable = true;
+                    w.RequestRearmLevel = level;
+                }
+            }
+        }
         public static void StampUnit(Unit unit)
         {
             if (unit == null) return;
@@ -94,7 +87,7 @@ namespace SupplyBuffetMod
             {
                 return;
             }
-            float throttle = (Plugin.StampThrottle != null) ? Plugin.StampThrottle.Value : 2f;
+            float throttle = Plugin.Cfg(Plugin.StampThrottle, 2f);
             if (throttle > 0f)
             {
                 float now = Time.timeSinceLevelLoad;
