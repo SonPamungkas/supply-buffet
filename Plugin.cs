@@ -10,7 +10,7 @@ using UnityEngine;
 using NuclearOption.SavedMission;
 namespace SupplyBuffetMod
 {
-    [BepInPlugin("neutral.supplybuffet", "SupplyBuffetMod", "2.1.5")]
+    [BepInPlugin("neutral.supplybuffet", "SupplyBuffetMod", "2.1.6")]
     public class Plugin : BaseUnityPlugin
     {
         public static Plugin Instance;
@@ -125,12 +125,12 @@ namespace SupplyBuffetMod
         {
             Instance = this;
             Log = Logger;
-            Log.LogInfo("[SupplyBuffetMod] Plugin v2.1.5 initializing...");
+            Log.LogInfo("[SupplyBuffetMod] Plugin v2.1.6 initializing...");
             BindConfigs();
             Harmony harmony = new Harmony("com.neutral.supplybuffet");
             harmony.PatchAll();
             Patches_AryxChimera.TryApply(harmony);
-            Log.LogInfo("[SupplyBuffetMod] v2.1.5 loaded successfully.");
+            Log.LogInfo("[SupplyBuffetMod] v2.1.6 loaded successfully.");
         }
         private void BindConfigs()
         {
@@ -145,9 +145,9 @@ namespace SupplyBuffetMod
             ActiveInterbaseRepairLimit = Config.Bind(S_REPAIR, "ActiveInterbaseRepairLimit", 1, "Max concurrent interbase repair flights per faction.");
             ActiveHeavyRepairLimit = Config.Bind(S_REPAIR, "ActiveHeavyRepairLimit", 1, "Max concurrent heavy (Chimera) repair flights per faction.");
             const string S_LIMITS = "ActiveLimits";
-            ActiveIbisLimitDryConfig = Config.Bind(S_LIMITS, "ActiveIbisLimitDry", 2, "Max number of active UtilityHelo1 doing dry resupply");
+            ActiveIbisLimitDryConfig = Config.Bind(S_LIMITS, "ActiveIbisLimitDry", 1, "Max number of active UtilityHelo1 doing dry resupply");
             ActiveIbisLimitWetConfig = Config.Bind(S_LIMITS, "ActiveIbisLimitWet", 1, "Max number of active UtilityHelo1 doing wet resupply");
-            ActiveTarantulaLimitDryConfig = Config.Bind(S_LIMITS, "ActiveTarantulaLimitDry", 2, "Max number of active QuadVTOL1 doing dry resupply");
+            ActiveTarantulaLimitDryConfig = Config.Bind(S_LIMITS, "ActiveTarantulaLimitDry", 1, "Max number of active QuadVTOL1 doing dry resupply");
             ActiveTarantulaLimitWetConfig = Config.Bind(S_LIMITS, "ActiveTarantulaLimitWet", 1, "Max number of active QuadVTOL1 doing wet resupply");
             ActiveChimeraLimitDryConfig = Config.Bind(S_LIMITS, "ActiveChimeraLimitDry", 1, "Max number of active Aryx_CargoPlane1 doing dry resupply");
             ActiveChimeraLimitWetConfig = Config.Bind(S_LIMITS, "ActiveChimeraLimitWet", 1, "Max number of active Aryx_CargoPlane1 doing wet resupply");
@@ -233,7 +233,7 @@ namespace SupplyBuffetMod
             ExpressRearmEnabled = Config.Bind(S_ADVANCED, "ExpressRearmEnabled", true, "When enabled, all ships (naval) rearm weapons unconditionally (Wet resupply).");
             ExpressRearmGroundEnabled = Config.Bind(S_ADVANCED, "ExpressRearmGroundEnabled", true, "When enabled, all ground vehicles and buildings rearm weapons unconditionally (Dry resupply).");
             RearmRequestSensitivity = Config.Bind(S_ADVANCED, "RearmRequestSensitivity", 0.5f, new ConfigDescription("Ammo fraction remaining below which a unit requests rearm. 0.999 means any expenditure asks; 0.5 matches vanilla but starves large-magazine launchers.", new AcceptableValueRange<float>(0.0f, 1.0f)));
-            DebugLogging = Config.Bind(S_ADVANCED, "DebugLogging", true, "Enable verbose debug logging for troubleshooting.");
+            DebugLogging = Config.Bind(S_ADVANCED, "DebugLogging", false, "Enable verbose debug logging for troubleshooting. Defaults OFF: the per-tick diagnostic lines gated on this are meant for chasing a specific problem, not for routine dedicated-server operation.");
             RestampInterval = Config.Bind(S_ADVANCED, "RestampInterval", 5f, "GLOBAL sweep. Seconds between re-stamping RequestRearmLevel across every unit, catching weapons created after spawn that would otherwise sit on vanilla's lower threshold. Cost is one walk over all units; 0 disables the stamping only - orphaned-rearm recovery still runs on the same sweep.");
             StampThrottle = Config.Bind(S_ADVANCED, "StampThrottle", 2f, "Minimum seconds between weapon re-stamps of the same unit on the fire path. The stamp used to walk every station and weapon on every shot fired, which dominated the frame during naval gunfire. 0 restores the old per-shot behaviour.");
         }
@@ -257,6 +257,7 @@ namespace SupplyBuffetMod
             _nullifierLatestEnd = 0f;
             _rearmListCache.Clear();
             ResupplyCensus.ResetForNewLevel();
+            AirbaseFactionCache.ResetForNewLevel();
             ChimeraSpawnQueue.ResetForNewLevel();
             ResupplyMissionManager.ResetForNewLevel();
             AirbaseRepairManager.ResetForNewLevel();
@@ -265,6 +266,7 @@ namespace SupplyBuffetMod
         }
         private void PeriodicMonitor()
         {
+            if (!ChimeraSpawnQueue.IsServerAuthority()) return;
             if (Encyclopedia.i == null || FactionRegistry.HQLookup == null) return;
             ResupplyMissionManager.Update();
             AirbaseRepairManager.Update();

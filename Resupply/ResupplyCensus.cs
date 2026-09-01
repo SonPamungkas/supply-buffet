@@ -21,6 +21,12 @@ namespace SupplyBuffetMod
             new ConditionalWeakTable<Aircraft, StrongBox<Airbase>>();
         private static readonly Dictionary<Faction, float> LastSpawnPerFaction =
             new Dictionary<Faction, float>();
+        private static float _lastObservedTime = float.NegativeInfinity;
+        private static void DetectLevelReset(float now)
+        {
+            if (now < _lastObservedTime) ResetForNewLevel();
+            _lastObservedTime = now;
+        }
         internal static void ResetForNewLevel()
         {
             Dispatched.Clear();
@@ -28,6 +34,7 @@ namespace SupplyBuffetMod
         }
         public static bool CanSpawnNow(FactionHQ hq)
         {
+            DetectLevelReset(Time.timeSinceLevelLoad);
             if (hq == null || hq.faction == null) return true;
             float interval = Plugin.Cfg(Plugin.SpawnInterval, 60f);
             if (interval <= 0f) return true;
@@ -37,6 +44,7 @@ namespace SupplyBuffetMod
         }
         public static float SpawnIntervalRemaining(FactionHQ hq)
         {
+            DetectLevelReset(Time.timeSinceLevelLoad);
             if (hq == null || hq.faction == null || Plugin.SpawnInterval == null) return 0f;
             if (!LastSpawnPerFaction.TryGetValue(hq.faction, out float last)) return 0f;
             float remaining = Plugin.SpawnInterval.Value - (Time.timeSinceLevelLoad - last);
@@ -44,6 +52,7 @@ namespace SupplyBuffetMod
         }
         public static void MarkSpawned(FactionHQ hq)
         {
+            DetectLevelReset(Time.timeSinceLevelLoad);
             if (hq == null || hq.faction == null) return;
             LastSpawnPerFaction[hq.faction] = Time.timeSinceLevelLoad;
         }
@@ -51,6 +60,7 @@ namespace SupplyBuffetMod
         {
             if (hq == null || string.IsNullOrEmpty(jsonKey)) return;
             float now = Time.timeSinceLevelLoad;
+            DetectLevelReset(now);
             PruneExpired(now);
             Dispatched.Add(new InFlightSpawn
             {
@@ -76,6 +86,7 @@ namespace SupplyBuffetMod
         }
         public static bool AnyDispatchPending(FactionHQ hq)
         {
+            DetectLevelReset(Time.timeSinceLevelLoad);
             if (hq == null || Dispatched.Count == 0) return false;
             PruneExpired(Time.timeSinceLevelLoad);
             for (int i = 0; i < Dispatched.Count; i++)
@@ -86,6 +97,7 @@ namespace SupplyBuffetMod
         }
         public static int CountInFlight(FactionHQ hq, string jsonKey, bool isWet)
         {
+            DetectLevelReset(Time.timeSinceLevelLoad);
             if (hq == null || Dispatched.Count == 0) return 0;
             PruneExpired(Time.timeSinceLevelLoad);
             int count = 0;
@@ -98,6 +110,7 @@ namespace SupplyBuffetMod
         }
         public static void OnAircraftRegistered(FactionHQ hq, Aircraft aircraft)
         {
+            DetectLevelReset(Time.timeSinceLevelLoad);
             if (hq == null || aircraft == null || aircraft.definition == null) return;
             if (Dispatched.Count == 0) return;
             PruneExpired(Time.timeSinceLevelLoad);

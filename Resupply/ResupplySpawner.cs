@@ -9,6 +9,9 @@ namespace SupplyBuffetMod
     {
         private static readonly Dictionary<string, AircraftDefinition> _defCache =
             new Dictionary<string, AircraftDefinition>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, float> _lastNoBaseLog =
+            new Dictionary<string, float>(StringComparer.Ordinal);
+        private const float NO_BASE_LOG_INTERVAL = 30f;
         private static AircraftDefinition GetDefinition(string jsonKey)
         {
             if (string.IsNullOrEmpty(jsonKey)) return null;
@@ -31,6 +34,13 @@ namespace SupplyBuffetMod
             float distIbis      = GetClosestSpawnBaseDistance(hq, requester, "UtilityHelo1",   out Airbase ibisBase,      wetOnly: isWet);
             float distTarantula = GetClosestSpawnBaseDistance(hq, requester, "QuadVTOL1",       out Airbase tarantulaBase, wetOnly: isWet);
             float distChimera   = GetClosestSpawnBaseDistance(hq, requester, "Aryx_CargoPlane1", out Airbase chimeraBase);
+            if (Step3_TryHelicopters(hq, requester, isWet, thresholdA, thresholdB, distIbis, ibisBase, distTarantula, tarantulaBase))
+                return true;
+            return Step4_TryChimera(hq, requester, isWet, thresholdB, distTarantula, tarantulaBase, distChimera, chimeraBase);
+        }
+        private static bool Step3_TryHelicopters(FactionHQ hq, Unit requester, bool isWet, float thresholdA, float thresholdB,
+            float distIbis, Airbase ibisBase, float distTarantula, Airbase tarantulaBase)
+        {
             bool ibisLimit = Plugin.IsResupplyLimitReached(hq, "UtilityHelo1", isWet, false);
             bool tarantulaLimit = Plugin.IsResupplyLimitReached(hq, "QuadVTOL1", isWet, false);
             bool ibisValid = distIbis < thresholdA && ibisBase != null && !ibisLimit;
@@ -60,6 +70,11 @@ namespace SupplyBuffetMod
                 Plugin.Log.LogInfo($"[SB|P5] Ibis limit reached, skipping for '{requester.unitName}'.");
             if (distTarantula < thresholdB && tarantulaBase != null && tarantulaLimit)
                 Plugin.Log.LogInfo($"[SB|P5] Tarantula limit reached, skipping for '{requester.unitName}'.");
+            return false;
+        }
+        private static bool Step4_TryChimera(FactionHQ hq, Unit requester, bool isWet, float thresholdB,
+            float distTarantula, Airbase tarantulaBase, float distChimera, Airbase chimeraBase)
+        {
             bool use3xFallback = false;
             if (tarantulaBase != null)
             {
@@ -92,18 +107,13 @@ namespace SupplyBuffetMod
         {
             closestBase = null;
             float minDist = float.MaxValue;
-            if (FactionRegistry.airbaseLookup == null) return minDist;
+            if (hq.faction == null) return minDist;
             AircraftDefinition spawnDef = GetDefinition(jsonKey);
             if (spawnDef == null) return minDist;
             List<string> refused = null;
-            foreach (var ab in FactionRegistry.airbaseLookup.Values)
+            foreach (var ab in AirbaseFactionCache.GetFactionAirbases(hq.faction))
             {
                 if (ab == null || !ab.isActiveAndEnabled) continue;
-                if (ab.CurrentHQ != hq && (ab.CurrentHQ == null || ab.CurrentHQ.faction != hq.faction))
-                {
-                    Refuse(ref refused, ab, "wrong faction");
-                    continue;
-                }
                 if (wetOnly && !IsWetSpawnBase(ab))
                 {
                     Refuse(ref refused, ab, "not a wet spawn base (name has no Helipad/SupplyShip/Atlas)");
@@ -119,7 +129,13 @@ namespace SupplyBuffetMod
             }
             if (closestBase == null && refused != null)
             {
-                Plugin.Log.LogInfo($"[SB|P7] No spawn base for {jsonKey} (wetOnly={wetOnly}): {string.Join("; ", refused)}");
+                string key = jsonKey + "|" + wetOnly;
+                float now = Time.timeSinceLevelLoad;
+                if (!_lastNoBaseLog.TryGetValue(key, out float last) || now - last >= NO_BASE_LOG_INTERVAL)
+                {
+                    _lastNoBaseLog[key] = now;
+                    Plugin.Log.LogInfo($"[SB|P7] No spawn base for {jsonKey} (wetOnly={wetOnly}): {string.Join("; ", refused)}");
+                }
             }
             return minDist;
         }

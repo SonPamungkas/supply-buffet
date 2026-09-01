@@ -76,10 +76,8 @@ namespace SupplyBuffetMod
                 return;
             }
             bool isWet = Plugin.IsNavalUnit(requester);
-            if (ResupplySpawner.TriggerResupply(hq, requester, isWet))
-            {
-                MarkDispatched(requester);
-            }
+            ResupplySpawner.TriggerResupply(hq, requester, isWet);
+            MarkDispatched(requester);
         }
     }
     [HarmonyPatch(typeof(Unit), "RpcRearm")]

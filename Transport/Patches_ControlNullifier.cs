@@ -1,3 +1,4 @@
+using System;
 using HarmonyLib;
 using UnityEngine;
 namespace SupplyBuffetMod
@@ -7,15 +8,22 @@ namespace SupplyBuffetMod
     {
         static void Postfix(Aircraft __instance)
         {
-            if (!Plugin.AnyControlNullified) return;
-            if (__instance != null && __instance.Player == null && Plugin.IsControlNullified(__instance))
+            try
             {
-                var inputs = __instance.GetInputs();
-                if (inputs != null)
+                if (!Plugin.AnyControlNullified) return;
+                if (__instance != null && __instance.Player == null && Plugin.IsControlNullified(__instance))
                 {
-                    inputs.roll = 0f;
-                    inputs.yaw = 0f;
+                    var inputs = __instance.GetInputs();
+                    if (inputs != null)
+                    {
+                        inputs.roll = 0f;
+                        inputs.yaw = 0f;
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[SupplyBuffetMod] Control nullifier (FilterInputs) failed: {ex.Message}");
             }
         }
     }
@@ -24,31 +32,45 @@ namespace SupplyBuffetMod
     {
         static void Prefix(Aircraft __instance)
         {
-            if (!Plugin.AnyControlNullified) return;
-            if (__instance != null && __instance.Player == null && Plugin.IsControlNullified(__instance))
+            try
             {
-                var inputs = __instance.GetInputs();
-                if (inputs != null)
+                if (!Plugin.AnyControlNullified) return;
+                if (__instance != null && __instance.Player == null && Plugin.IsControlNullified(__instance))
                 {
-                    inputs.roll = 0f;
-                    inputs.yaw = 0f;
+                    var inputs = __instance.GetInputs();
+                    if (inputs != null)
+                    {
+                        inputs.roll = 0f;
+                        inputs.yaw = 0f;
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[SupplyBuffetMod] Control nullifier (FixedUpdate prefix) failed: {ex.Message}");
             }
         }
         static void Postfix(Aircraft __instance)
         {
-            if (!Plugin.AnyControlNullified) return;
-            if (__instance != null && __instance.Player == null && Plugin.IsControlNullified(__instance))
+            try
             {
-                if (__instance.rb != null && Plugin.TryGetNullifiedVelocityDir(__instance, out Vector3 dir))
+                if (!Plugin.AnyControlNullified) return;
+                if (__instance != null && __instance.Player == null && Plugin.IsControlNullified(__instance))
                 {
-                    Vector3 v = __instance.rb.velocity;
-                    float horizSpeed = new Vector2(v.x, v.z).magnitude;
-                    if (horizSpeed > 0.1f)
+                    if (__instance.rb != null && Plugin.TryGetNullifiedVelocityDir(__instance, out Vector3 dir))
                     {
-                        __instance.rb.velocity = new Vector3(dir.x * horizSpeed, v.y, dir.z * horizSpeed);
+                        Vector3 v = __instance.rb.velocity;
+                        float horizSpeed = new Vector2(v.x, v.z).magnitude;
+                        if (horizSpeed > 0.1f)
+                        {
+                            __instance.rb.velocity = new Vector3(dir.x * horizSpeed, v.y, dir.z * horizSpeed);
+                        }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[SupplyBuffetMod] Control nullifier (FixedUpdate postfix) failed: {ex.Message}");
             }
         }
     }

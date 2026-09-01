@@ -49,6 +49,7 @@ namespace SupplyBuffetMod
             return count;
         }
         private static readonly Dictionary<Aircraft, RepairKind> _flightKinds = new Dictionary<Aircraft, RepairKind>();
+        private static readonly List<Aircraft> _pruneScratch = new List<Aircraft>();
         private class RepairState
         {
             public float NextAllowedTime;
@@ -69,6 +70,7 @@ namespace SupplyBuffetMod
             _flightKinds.Clear();
             _outpostStates.Clear();
             _pending.Clear();
+            _pruneScratch.Clear();
         }
         private static bool DebugOn => Plugin.Dbg;
         public static bool IsValidRepairTarget(Unit unit)
@@ -102,19 +104,21 @@ namespace SupplyBuffetMod
         {
             if (Plugin.ThresholdA == null || Plugin.ThresholdB == null) return;
             if (!ChimeraSpawnQueue.IsServerAuthority()) return;
-            var toRemove = new List<Aircraft>();
+            _pruneScratch.Clear();
             foreach (var kvp in AssignedRepairs)
             {
                 if (kvp.Key == null || kvp.Key.disabled || !IsValidRepairTarget(kvp.Value))
                 {
-                    toRemove.Add(kvp.Key);
+                    _pruneScratch.Add(kvp.Key);
                 }
             }
-            foreach (var ac in toRemove)
+            for (int i = 0; i < _pruneScratch.Count; i++)
             {
+                Aircraft ac = _pruneScratch[i];
                 AssignedRepairs.Remove(ac);
                 if (ac != null) _flightKinds.Remove(ac);
             }
+            _pruneScratch.Clear();
             if (FactionRegistry.HQLookup == null) return;
             foreach (var hq in FactionRegistry.HQLookup.Values)
             {
@@ -284,29 +288,105 @@ namespace SupplyBuffetMod
             bestAircraft = null;
             bestKind = RepairKind.Interbase;
             rejection = "no allied airbase can spawn a repair aircraft";
-            bool anyKindDisabled = false;
-            Airbase targetAirbase = isOutpost ? null : target.GetAirbase();
-            Airbase nearestRejected = null;
-            string nearestRejectedKey = null;
-            float nearestRejectedDist = float.MaxValue;
-            float minDist = float.MaxValue;
             float thresholdA = Plugin.ThresholdA.Value;
             float thresholdB = Plugin.ThresholdB.Value;
+            Airbase targetAirbase = isOutpost ? null : target.GetAirbase();
+            bool anyKindDisabled = false;
+            if (!isOutpost && targetAirbase != null)
+            {
+                if (!KindEnabled(RepairKind.Local)) anyKindDisabled = true;
+                else if (TryLocalTier(hq, target, targetAirbase, thresholdA, thresholdB, out bestBase, out bestAircraft))
+                {
+                    bestKind = RepairKind.Local;
+                    return true;
+                }
+            }
+            Airbase nearestRejected;
+            string nearestRejectedKey;
+            float nearestRejectedDist;
+            if (!KindEnabled(RepairKind.Interbase))
+            {
+                anyKindDisabled = true;
+                nearestRejected = null; nearestRejectedKey = null; nearestRejectedDist = float.MaxValue;
+            }
+            else if (TryInterbaseTier(hq, target, targetAirbase, thresholdA, thresholdB,
+                         out bestBase, out bestAircraft, out nearestRejected, out nearestRejectedKey, out nearestRejectedDist))
+            {
+                bestKind = RepairKind.Interbase;
+                return true;
+            }
+            if (!isOutpost)
+            {
+                if (!KindEnabled(RepairKind.Heavy)) anyKindDisabled = true;
+                else if (TryHeavyTier(hq, target, out bestBase))
+                {
+                    bestAircraft = "Aryx_CargoPlane1";
+                    bestKind = RepairKind.Heavy;
+                    return true;
+                }
+            }
+            if (nearestRejected != null)
+            {
+                rejection = $"nearest {nearestRejectedKey} base '{nearestRejected.gameObject.name}' is {nearestRejectedDist:F0}m away, outside its threshold (A={thresholdA:F0}m, B={thresholdB:F0}m)";
+            }
+            else if (anyKindDisabled)
+            {
+                rejection = "every candidate belongs to a repair kind that is disabled in the config";
+            }
+            return false;
+        }
+        private static bool TryLocalTier(FactionHQ hq, Unit target, Airbase targetAirbase, float thresholdA, float thresholdB,
+            out Airbase bestBase, out string bestAircraft)
+        {
+            bestBase = null;
+            bestAircraft = null;
+            if (!targetAirbase.isActiveAndEnabled) return false;
+            if (targetAirbase.CurrentHQ == null || targetAirbase.CurrentHQ.faction != hq.faction) return false;
+            bool isShip = targetAirbase.TryGetAttachedUnit(out Unit attachedUnit) && attachedUnit.GetType().Name == "Ship";
+            if (isShip)
+            {
+                var spawnerState = _spawnerStates.GetValue(targetAirbase, _ => new SpawnerState());
+                if (Time.timeSinceLevelLoad < spawnerState.NextAllowedTime) return false; 
+            }
+            float d = Vector3.Distance(targetAirbase.transform.position, target.transform.position);
+            var defIbis = GetAircraftDefinition("UtilityHelo1");
+            if (defIbis != null && targetAirbase.CanSpawnAircraft(defIbis) && d < (isShip ? thresholdB : thresholdA))
+            {
+                bestBase = targetAirbase;
+                bestAircraft = "UtilityHelo1";
+                return true;
+            }
+            var defTarantula = GetAircraftDefinition("QuadVTOL1");
+            if (defTarantula != null && targetAirbase.CanSpawnAircraft(defTarantula) && d < thresholdB)
+            {
+                bestBase = targetAirbase;
+                bestAircraft = "QuadVTOL1";
+                return true;
+            }
+            return false;
+        }
+        private static bool TryInterbaseTier(FactionHQ hq, Unit target, Airbase targetAirbase, float thresholdA, float thresholdB,
+            out Airbase bestBase, out string bestAircraft,
+            out Airbase nearestRejected, out string nearestRejectedKey, out float nearestRejectedDist)
+        {
+            bestBase = null;
+            bestAircraft = null;
+            nearestRejected = null;
+            nearestRejectedKey = null;
+            nearestRejectedDist = float.MaxValue;
+            float minDist = float.MaxValue;
             var defIbis = GetAircraftDefinition("UtilityHelo1");
             var defTarantula = GetAircraftDefinition("QuadVTOL1");
-            var defChimera = GetAircraftDefinition("Aryx_CargoPlane1");
-            foreach (var ab in FactionRegistry.airbaseLookup.Values)
+            foreach (var ab in AirbaseFactionCache.GetFactionAirbases(hq.faction))
             {
                 if (ab == null || !ab.isActiveAndEnabled) continue;
-                if (ab.CurrentHQ != hq && (ab.CurrentHQ == null || ab.CurrentHQ.faction != hq.faction)) continue;
+                if (targetAirbase != null && ab == targetAirbase) continue; 
                 bool isShip = ab.TryGetAttachedUnit(out Unit attachedUnit) && attachedUnit.GetType().Name == "Ship";
                 if (isShip)
                 {
                     var spawnerState = _spawnerStates.GetValue(ab, _ => new SpawnerState());
                     if (Time.timeSinceLevelLoad < spawnerState.NextAllowedTime) continue; 
                 }
-                RepairKind kind = (targetAirbase != null && ab == targetAirbase) ? RepairKind.Local : RepairKind.Interbase;
-                if (!KindEnabled(kind)) { anyKindDisabled = true; continue; }
                 float d = Vector3.Distance(ab.transform.position, target.transform.position);
                 if (defIbis != null && ab.CanSpawnAircraft(defIbis))
                 {
@@ -316,7 +396,6 @@ namespace SupplyBuffetMod
                         minDist = d;
                         bestBase = ab;
                         bestAircraft = "UtilityHelo1";
-                        bestKind = kind;
                     }
                     else if (d >= limit && d < nearestRejectedDist)
                     {
@@ -333,7 +412,6 @@ namespace SupplyBuffetMod
                         minDist = d;
                         bestBase = ab;
                         bestAircraft = "QuadVTOL1";
-                        bestKind = kind;
                     }
                     else if (d >= limit && d < nearestRejectedDist)
                     {
@@ -343,36 +421,30 @@ namespace SupplyBuffetMod
                     }
                 }
             }
-            if (bestBase == null && !isOutpost && defChimera != null && !KindEnabled(RepairKind.Heavy))
+            return bestBase != null;
+        }
+        private static bool TryHeavyTier(FactionHQ hq, Unit target, out Airbase bestBase)
+        {
+            bestBase = null;
+            var defChimera = GetAircraftDefinition("Aryx_CargoPlane1");
+            if (defChimera == null) return false;
+            float minDist = float.MaxValue;
+            foreach (var ab in AirbaseFactionCache.GetFactionAirbases(hq.faction))
             {
-                anyKindDisabled = true;
-            }
-            else if (bestBase == null && !isOutpost && defChimera != null)
-            {
-                foreach (var ab in FactionRegistry.airbaseLookup.Values)
+                if (ab == null || !ab.isActiveAndEnabled) continue;
+                bool isShip = ab.TryGetAttachedUnit(out Unit attachedUnit) && attachedUnit.GetType().Name == "Ship";
+                if (isShip)
                 {
-                    if (ab == null || !ab.isActiveAndEnabled) continue;
-                    if (ab.CurrentHQ != hq && (ab.CurrentHQ == null || ab.CurrentHQ.faction != hq.faction)) continue;
-                    if (ab.CanSpawnAircraft(defChimera))
-                    {
-                        float d = Vector3.Distance(ab.transform.position, target.transform.position);
-                        if (d < minDist)
-                        {
-                            minDist = d;
-                            bestBase = ab;
-                            bestAircraft = "Aryx_CargoPlane1";
-                            bestKind = RepairKind.Heavy;
-                        }
-                    }
+                    var spawnerState = _spawnerStates.GetValue(ab, _ => new SpawnerState());
+                    if (Time.timeSinceLevelLoad < spawnerState.NextAllowedTime) continue; 
                 }
-            }
-            if (bestBase == null && nearestRejected != null)
-            {
-                rejection = $"nearest {nearestRejectedKey} base '{nearestRejected.gameObject.name}' is {nearestRejectedDist:F0}m away, outside its threshold (A={thresholdA:F0}m, B={thresholdB:F0}m)";
-            }
-            else if (bestBase == null && anyKindDisabled)
-            {
-                rejection = "every candidate belongs to a repair kind that is disabled in the config";
+                if (!ab.CanSpawnAircraft(defChimera)) continue;
+                float d = Vector3.Distance(ab.transform.position, target.transform.position);
+                if (d < minDist)
+                {
+                    minDist = d;
+                    bestBase = ab;
+                }
             }
             return bestBase != null;
         }
