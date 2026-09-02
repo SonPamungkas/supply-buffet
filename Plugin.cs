@@ -105,6 +105,9 @@ namespace SupplyBuffetMod
         public static ConfigEntry<float> RestampInterval;
         public static ConfigEntry<float> StampThrottle;
         public static ConfigEntry<bool> DebugLogging;
+        public static ConfigEntry<bool> Advanced3xFallbackEnabled;
+        public static ConfigEntry<bool> ClusterCoverageSuppressionEnabled;
+        public static ConfigEntry<float> OrphanRearmSweepInterval;
         public static bool Dbg => DebugLogging != null && DebugLogging.Value;
         public static float Cfg(ConfigEntry<float> entry, float fallback) => (entry != null) ? entry.Value : fallback;
         public static bool Cfg(ConfigEntry<bool> entry, bool fallback) => (entry != null) ? entry.Value : fallback;
@@ -234,6 +237,9 @@ namespace SupplyBuffetMod
             ExpressRearmGroundEnabled = Config.Bind(S_ADVANCED, "ExpressRearmGroundEnabled", true, "When enabled, all ground vehicles and buildings rearm weapons unconditionally (Dry resupply).");
             RearmRequestSensitivity = Config.Bind(S_ADVANCED, "RearmRequestSensitivity", 0.5f, new ConfigDescription("Ammo fraction remaining below which a unit requests rearm. 0.999 means any expenditure asks; 0.5 matches vanilla but starves large-magazine launchers.", new AcceptableValueRange<float>(0.0f, 1.0f)));
             DebugLogging = Config.Bind(S_ADVANCED, "DebugLogging", false, "Enable verbose debug logging for troubleshooting. Defaults OFF: the per-tick diagnostic lines gated on this are meant for chasing a specific problem, not for routine dedicated-server operation.");
+            Advanced3xFallbackEnabled = Config.Bind(S_ADVANCED, "Advanced3xFallbackEnabled", false, "When enabled, a dry resupply request prefers a Tarantula over the Chimera whenever the nearest Tarantula base is at least 3x closer than the nearest Chimera hangar (or no Chimera base exists at all) - avoiding a long, inefficient Chimera flight when a much closer naval airframe could do the job. Costs one extra distance comparison per dry request. Defaults OFF to keep dispatch as cheap as possible on a large mission: the Chimera tier still runs either way (still refusing deliveries too close to fly a proper approach, still respecting its own active limit), it just never gets pre-empted by a closer Tarantula unless this is turned on.");
+            ClusterCoverageSuppressionEnabled = Config.Bind(S_ADVANCED, "ClusterCoverageSuppressionEnabled", false, "When enabled, a unit already inside the range of another supplied rearmer (a delivered crate, a bunker, a supply ship, etc.) is skipped by the ammo scan - so six units parked together cost one sortie, not six. Costs one vanilla TryGetRearmer lookup per eligible unit per scan. Defaults OFF to keep the ammo scan as cheap as possible on a large mission: every eligible unit queues its own sortie regardless of what already covers it, trading more resupply traffic for a cheaper scan. Turn on for smaller missions where sortie efficiency matters more than scan cost.");
+            OrphanRearmSweepInterval = Config.Bind(S_ADVANCED, "OrphanRearmSweepInterval", 0f, "Minimum seconds between sweeps that recover units which fell off the game's own needs-rearm list while still needing ammunition (a genuine vanilla leak this mod repairs every sweep by default). 0 means every periodic tick (5s), matching the mod's behaviour since this was added - a unit that falls off that list can never re-register itself, so THIS IS A RECOVERY WINDOW, NOT AN OFF SWITCH: raising it only delays how quickly a leaked unit is caught, up to that many seconds, it never disables the recovery. Raise it on a very large mission to reduce how often the full unit list is walked for this purpose; leave at 0 unless chasing a specific performance problem.");
             RestampInterval = Config.Bind(S_ADVANCED, "RestampInterval", 5f, "GLOBAL sweep. Seconds between re-stamping RequestRearmLevel across every unit, catching weapons created after spawn that would otherwise sit on vanilla's lower threshold. Cost is one walk over all units; 0 disables the stamping only - orphaned-rearm recovery still runs on the same sweep.");
             StampThrottle = Config.Bind(S_ADVANCED, "StampThrottle", 2f, "Minimum seconds between weapon re-stamps of the same unit on the fire path. The stamp used to walk every station and weapon on every shot fired, which dominated the frame during naval gunfire. 0 restores the old per-shot behaviour.");
         }
@@ -277,7 +283,8 @@ namespace SupplyBuffetMod
                 if (hq == null || !hq.isActiveAndEnabled || hq.faction == null) continue;
                 var controller = hq.RearmMissionController;
                 if (controller == null) continue;
-                if (ResupplyMissionManager.TryGetUnassignedUnitNeedingRearm(controller, true, false, null, out Unit shipNeedingRearm) && shipNeedingRearm != null)
+                ResupplyMissionManager.TryGetUnassignedUnitsNeedingRearm(controller, out Unit shipNeedingRearm, out Unit groundNeedingRearm);
+                if (shipNeedingRearm != null)
                 {
                     if (DebugLogging.Value)
                     {
@@ -285,7 +292,7 @@ namespace SupplyBuffetMod
                     }
                     ResupplyDispatcher.TryDispatchResupply(hq, shipNeedingRearm);
                 }
-                else if (ResupplyMissionManager.TryGetUnassignedUnitNeedingRearm(controller, false, true, null, out Unit groundNeedingRearm) && groundNeedingRearm != null)
+                else if (groundNeedingRearm != null)
                 {
                     if (DebugLogging.Value)
                     {
@@ -304,17 +311,22 @@ namespace SupplyBuffetMod
             }
         }
         private float _lastRestampTime;
+        private float _lastOrphanSweepTime;
         private void RestampUnits()
         {
             if (UnitRegistry.allUnits == null) return;
             bool doStamp = RestampInterval != null && RestampInterval.Value > 0f
                 && Time.timeSinceLevelLoad - _lastRestampTime >= RestampInterval.Value;
+            bool doOrphanCheck = OrphanRearmSweepInterval == null || OrphanRearmSweepInterval.Value <= 0f
+                || Time.timeSinceLevelLoad - _lastOrphanSweepTime >= OrphanRearmSweepInterval.Value;
+            if (!doStamp && !doOrphanCheck) return;
             if (doStamp) _lastRestampTime = Time.timeSinceLevelLoad;
+            if (doOrphanCheck) _lastOrphanSweepTime = Time.timeSinceLevelLoad;
             foreach (Unit unit in UnitRegistry.allUnits)
             {
                 if (unit == null || unit.disabled) continue;
                 if (doStamp) RearmStampHelper.StampUnit(unit);
-                RepairOrphanedRearmRequest(unit);
+                if (doOrphanCheck) RepairOrphanedRearmRequest(unit);
             }
             _rearmListCache.Clear();
         }

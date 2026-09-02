@@ -15,6 +15,7 @@ namespace SupplyBuffetMod
             new ConditionalWeakTable<Unit, StrongBox<float>>();
         private static bool CoveredByExistingRearmer(RearmMissionController controller, Unit unit)
         {
+            if (Plugin.ClusterCoverageSuppressionEnabled != null && !Plugin.ClusterCoverageSuppressionEnabled.Value) return false;
             if (controller == null || unit == null) return false;
             if (!controller.TryGetRearmer(unit, out _))
             {
@@ -126,6 +127,44 @@ namespace SupplyBuffetMod
                 Plugin.Log.LogInfo($"[SB|P3] ResupplyMissionManager picked needy unit: {target.unitName} (Missing ammo fraction: {maxMissing:F2})");
             }
             return target != null;
+        }
+        public static bool TryGetUnassignedUnitsNeedingRearm(RearmMissionController controller, out Unit shipTarget, out Unit groundTarget)
+        {
+            shipTarget = null;
+            groundTarget = null;
+            if (controller == null || controller.UnitsNeedingRearm == null) return false;
+            float maxMissingShip = 0f;
+            float maxMissingGround = 0f;
+            for (int i = controller.UnitsNeedingRearm.Count - 1; i >= 0; i--)
+            {
+                Unit unit = controller.UnitsNeedingRearm[i];
+                if (unit == null || unit.disabled)
+                {
+                    controller.UnitsNeedingRearm.RemoveAt(i);
+                    continue;
+                }
+                if (unit.radarAlt > 10f) continue;
+                if (unit is Aircraft) continue;
+                if (IsUnitAssignedOrQueued(unit, null)) continue;
+                if (CoveredByExistingRearmer(controller, unit)) continue;
+                if (ResupplyDispatcher.IsOnCooldown(unit)) continue;
+                bool isNaval = Plugin.IsNavalUnit(unit);
+                float missing = unit.GetAmmoValue().Missing;
+                if (isNaval)
+                {
+                    if (missing > maxMissingShip) { shipTarget = unit; maxMissingShip = missing; }
+                }
+                else
+                {
+                    if (missing > maxMissingGround) { groundTarget = unit; maxMissingGround = missing; }
+                }
+            }
+            if (Plugin.Dbg)
+            {
+                if (shipTarget != null) Plugin.Log.LogInfo($"[SB|P3] ResupplyMissionManager picked needy ship: {shipTarget.unitName} (Missing ammo fraction: {maxMissingShip:F2})");
+                if (groundTarget != null) Plugin.Log.LogInfo($"[SB|P3] ResupplyMissionManager picked needy ground unit: {groundTarget.unitName} (Missing ammo fraction: {maxMissingGround:F2})");
+            }
+            return shipTarget != null || groundTarget != null;
         }
         public static bool TryGetRestockingSupplyVehicle(RearmMissionController controller, Aircraft requestingAircraft, out Unit target)
         {

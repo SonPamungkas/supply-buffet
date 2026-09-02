@@ -31,9 +31,10 @@ namespace SupplyBuffetMod
             if (!ChimeraSpawnQueue.IsServerAuthority()) return false;
             float thresholdA = Plugin.ThresholdA.Value;
             float thresholdB = Plugin.ThresholdB.Value;
-            float distIbis      = GetClosestSpawnBaseDistance(hq, requester, "UtilityHelo1",   out Airbase ibisBase,      wetOnly: isWet);
-            float distTarantula = GetClosestSpawnBaseDistance(hq, requester, "QuadVTOL1",       out Airbase tarantulaBase, wetOnly: isWet);
-            float distChimera   = GetClosestSpawnBaseDistance(hq, requester, "Aryx_CargoPlane1", out Airbase chimeraBase);
+            FindResupplyCandidates(hq, requester, isWet,
+                out float distIbis, out Airbase ibisBase,
+                out float distTarantula, out Airbase tarantulaBase,
+                out float distChimera, out Airbase chimeraBase);
             if (Step3_TryHelicopters(hq, requester, isWet, thresholdA, thresholdB, distIbis, ibisBase, distTarantula, tarantulaBase))
                 return true;
             return Step4_TryChimera(hq, requester, isWet, thresholdB, distTarantula, tarantulaBase, distChimera, chimeraBase);
@@ -75,12 +76,9 @@ namespace SupplyBuffetMod
         private static bool Step4_TryChimera(FactionHQ hq, Unit requester, bool isWet, float thresholdB,
             float distTarantula, Airbase tarantulaBase, float distChimera, Airbase chimeraBase)
         {
-            bool use3xFallback = false;
-            if (tarantulaBase != null)
-            {
-                if (chimeraBase == null) use3xFallback = true;
-                else if (distTarantula * 3f < distChimera) use3xFallback = true;
-            }
+            bool advancedFallbackEnabled = Plugin.Advanced3xFallbackEnabled == null || Plugin.Advanced3xFallbackEnabled.Value;
+            bool use3xFallback = advancedFallbackEnabled
+                && Advanced.TarantulaChimeraFallback.ShouldPreferTarantula(distTarantula, tarantulaBase, distChimera, chimeraBase);
             if (use3xFallback)
             {
                 if (Plugin.IsResupplyLimitReached(hq, "QuadVTOL1", isWet, false)) return false;
@@ -101,43 +99,58 @@ namespace SupplyBuffetMod
             Plugin.Log.LogInfo($"[SB|P5] No valid resupply base found for '{requester.unitName}'. Skipping.");
             return false;
         }
-        private static float GetClosestSpawnBaseDistance(
-            FactionHQ hq, Unit requester, string jsonKey,
-            out Airbase closestBase, bool wetOnly = false)
+        private static void FindResupplyCandidates(FactionHQ hq, Unit requester, bool isWet,
+            out float distIbis, out Airbase ibisBase,
+            out float distTarantula, out Airbase tarantulaBase,
+            out float distChimera, out Airbase chimeraBase)
         {
-            closestBase = null;
-            float minDist = float.MaxValue;
-            if (hq.faction == null) return minDist;
-            AircraftDefinition spawnDef = GetDefinition(jsonKey);
-            if (spawnDef == null) return minDist;
-            List<string> refused = null;
+            distIbis = float.MaxValue; ibisBase = null;
+            distTarantula = float.MaxValue; tarantulaBase = null;
+            distChimera = float.MaxValue; chimeraBase = null;
+            if (hq.faction == null) return;
+            AircraftDefinition defIbis = GetDefinition("UtilityHelo1");
+            AircraftDefinition defTarantula = GetDefinition("QuadVTOL1");
+            AircraftDefinition defChimera = GetDefinition("Aryx_CargoPlane1");
+            List<string> refusedIbis = null;
+            List<string> refusedTarantula = null;
+            List<string> refusedChimera = null;
             foreach (var ab in AirbaseFactionCache.GetFactionAirbases(hq.faction))
             {
                 if (ab == null || !ab.isActiveAndEnabled) continue;
-                if (wetOnly && !IsWetSpawnBase(ab))
-                {
-                    Refuse(ref refused, ab, "not a wet spawn base (name has no Helipad/SupplyShip/Atlas)");
-                    continue;
-                }
-                if (!ab.CanSpawnAircraft(spawnDef))
-                {
-                    Refuse(ref refused, ab, $"CanSpawnAircraft refused {jsonKey}");
-                    continue;
-                }
+                bool wetOk = !isWet || IsWetSpawnBase(ab);
                 float d = Vector3.Distance(ab.transform.position, requester.transform.position);
-                if (d < minDist) { minDist = d; closestBase = ab; }
-            }
-            if (closestBase == null && refused != null)
-            {
-                string key = jsonKey + "|" + wetOnly;
-                float now = Time.timeSinceLevelLoad;
-                if (!_lastNoBaseLog.TryGetValue(key, out float last) || now - last >= NO_BASE_LOG_INTERVAL)
+                if (defIbis != null)
                 {
-                    _lastNoBaseLog[key] = now;
-                    Plugin.Log.LogInfo($"[SB|P7] No spawn base for {jsonKey} (wetOnly={wetOnly}): {string.Join("; ", refused)}");
+                    if (!wetOk) Refuse(ref refusedIbis, ab, "not a wet spawn base (name has no Helipad/SupplyShip/Atlas)");
+                    else if (!ab.CanSpawnAircraft(defIbis)) Refuse(ref refusedIbis, ab, "CanSpawnAircraft refused UtilityHelo1");
+                    else if (d < distIbis) { distIbis = d; ibisBase = ab; }
+                }
+                if (defTarantula != null)
+                {
+                    if (!wetOk) Refuse(ref refusedTarantula, ab, "not a wet spawn base (name has no Helipad/SupplyShip/Atlas)");
+                    else if (!ab.CanSpawnAircraft(defTarantula)) Refuse(ref refusedTarantula, ab, "CanSpawnAircraft refused QuadVTOL1");
+                    else if (d < distTarantula) { distTarantula = d; tarantulaBase = ab; }
+                }
+                if (defChimera != null)
+                {
+                    if (!ab.CanSpawnAircraft(defChimera)) Refuse(ref refusedChimera, ab, "CanSpawnAircraft refused Aryx_CargoPlane1");
+                    else if (d < distChimera) { distChimera = d; chimeraBase = ab; }
                 }
             }
-            return minDist;
+            LogNoSpawnBase("UtilityHelo1", isWet, ibisBase, refusedIbis);
+            LogNoSpawnBase("QuadVTOL1", isWet, tarantulaBase, refusedTarantula);
+            LogNoSpawnBase("Aryx_CargoPlane1", false, chimeraBase, refusedChimera);
+        }
+        private static void LogNoSpawnBase(string jsonKey, bool wetOnly, Airbase found, List<string> refused)
+        {
+            if (found != null || refused == null) return;
+            string key = jsonKey + "|" + wetOnly;
+            float now = Time.timeSinceLevelLoad;
+            if (!_lastNoBaseLog.TryGetValue(key, out float last) || now - last >= NO_BASE_LOG_INTERVAL)
+            {
+                _lastNoBaseLog[key] = now;
+                Plugin.Log.LogInfo($"[SB|P7] No spawn base for {jsonKey} (wetOnly={wetOnly}): {string.Join("; ", refused)}");
+            }
         }
         private static void Refuse(ref List<string> refused, Airbase ab, string why)
         {
